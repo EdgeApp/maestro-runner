@@ -56,9 +56,10 @@ func TestBuildSelectors_SingleAttributeUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSelectors failed: %v", err)
 	}
-	// text/description/hint contains, then the same three case-insensitively.
-	if len(textOnly) != 6 {
-		t.Errorf("expected 6 text strategies, got %d", len(textOnly))
+	// text/description/hint matched whole, then containing it, then the
+	// same three case-insensitively.
+	if len(textOnly) != 9 {
+		t.Errorf("expected 9 text strategies, got %d", len(textOnly))
 	}
 	for _, s := range textOnly {
 		if strings.Contains(s.Value, "resourceId") {
@@ -81,7 +82,49 @@ func TestBuildSelectorsForTap_CombinedKeepsClickableFirst(t *testing.T) {
 		t.Errorf("expected a clickable-first strategy, got: %s", strategies[0].Value)
 	}
 	if !strings.Contains(strategies[0].Value, "resourceId") ||
-		!strings.Contains(strategies[0].Value, "textContains") {
+		!strings.Contains(strategies[0].Value, `textMatches("(?is)\Q7 misses\E")`) {
 		t.Errorf("clickable strategy must still carry both id and text, got: %s", strategies[0].Value)
+	}
+}
+
+// A plain text selector tries the whole text before a substring, and a tap
+// tries every whole-text strategy, clickable or not, before any substring
+// one: an address bar showing ".../registration-username" must not beat the
+// form label that is exactly "Username".
+func TestTapStrategies_ExactTextFirst(t *testing.T) {
+	clickable, err := buildClickableOnlyStrategies(flow.Selector{Text: "Username"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := buildSelectors(flow.Selector{Text: "Username"}, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strategies := exactTextFirst(append(clickable, all...))
+	sawSubstring := false
+	exactCount := 0
+	for _, s := range strategies {
+		if isExactTextStrategy(s) {
+			exactCount++
+			if sawSubstring {
+				t.Fatalf("whole-text strategy after a substring one: %s", s.Value)
+			}
+		} else {
+			sawSubstring = true
+		}
+	}
+	if exactCount != 6 {
+		t.Errorf("expected 6 whole-text strategies (3 clickable, 3 any), got %d", exactCount)
+	}
+	if !strings.Contains(strategies[0].Value, `textMatches("(?is)\QUsername\E").clickable(true)`) {
+		t.Errorf("first strategy should be the clickable whole-text match, got %s", strategies[0].Value)
+	}
+
+	// A regex selector keeps its own whole-match patterns only.
+	regex, _ := buildSelectors(flow.Selector{Text: "Passwords.*"}, 5000)
+	for _, s := range regex {
+		if isExactTextStrategy(s) {
+			t.Errorf("regex selector got a literal whole-text strategy: %s", s.Value)
+		}
 	}
 }

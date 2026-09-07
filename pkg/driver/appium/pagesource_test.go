@@ -183,8 +183,14 @@ func TestFilterBySelector_Android(t *testing.T) {
 		selector flow.Selector
 		expected int
 	}{
-		{"by text exact", flow.Selector{Text: "Hello"}, 3}, // matches Hello, Hello World, Hello button
-		{"by text contains", flow.Selector{Text: "World"}, 2},
+		// An exact match exists, so only it is returned — "Hello World" and
+		// the "Hello button" content-desc no longer come along. This is what
+		// upstream does: its matcher is a full match, so "Hello" never matches
+		// "Hello World" there at all.
+		{"exact match wins over contains", flow.Selector{Text: "Hello"}, 1},
+		{"exact match wins on content-desc too", flow.Selector{Text: "World"}, 1},
+		// No element's text IS "ello", so the contains behaviour still applies.
+		{"contains when nothing matches exactly", flow.Selector{Text: "ello"}, 3},
 		{"by ID", flow.Selector{ID: "id/hello"}, 1},
 		{"by ID partial", flow.Selector{ID: "id/"}, 4},
 		{"by enabled true", flow.Selector{Enabled: boolPtr(true)}, 3},
@@ -214,7 +220,10 @@ func TestFilterBySelector_iOS(t *testing.T) {
 		selector flow.Selector
 		expected int
 	}{
-		{"by text (label)", flow.Selector{Text: "Submit"}, 3},
+		// "Submit" is exactly one element's label, so "Submit Order" and the
+		// "Submit value" field drop out.
+		{"exact label wins over contains", flow.Selector{Text: "Submit"}, 1},
+		{"contains when nothing matches exactly", flow.Selector{Text: "ubmit"}, 3},
 		{"by ID (name)", flow.Selector{ID: "submitBtn"}, 1},
 		{"by ID partial", flow.Selector{ID: "Btn"}, 3},
 		// Text never reaches the accessibility identifier: "btn" is only in names (#178).
@@ -684,5 +693,53 @@ func TestGetClickableElement(t *testing.T) {
 	result = GetClickableElement(nil)
 	if result != nil {
 		t.Errorf("Expected nil for nil input, got %v", result)
+	}
+}
+
+// TestFilterBySelector_PrefersExactText covers the reported failure: a price
+// field reading "7000.00" contains "0" and beat the switch whose text is
+// exactly "0", so the tap landed in the wrong field (#161).
+func TestFilterBySelector_PrefersExactText(t *testing.T) {
+	elements := []*ParsedElement{
+		{Text: "7000.00"},
+		{Text: "0"},
+		{Text: "Limit"},
+	}
+	got := FilterBySelector(elements, flow.Selector{Text: "0"}, "android")
+	if len(got) != 1 || got[0].Text != "0" {
+		t.Fatalf("expected only the exact match, got %+v", got)
+	}
+}
+
+func TestFilterBySelector_FallsBackToContains(t *testing.T) {
+	// No exact match exists, so the substring behaviour flows rely on stands.
+	elements := []*ParsedElement{{Text: "Good till Cancel"}}
+	got := FilterBySelector(elements, flow.Selector{Text: "till Can"}, "android")
+	if len(got) != 1 {
+		t.Fatalf("expected the contains match to survive, got %d", len(got))
+	}
+}
+
+// TestFilterBySelector_ExactTextStillRequiresID is the guard on the fix. An
+// exact text match must not bypass the rest of the selector — doing so returns
+// an element with the right text and the wrong id, which is the OR behaviour
+// removed in #157/#158.
+func TestFilterBySelector_ExactTextStillRequiresID(t *testing.T) {
+	elements := []*ParsedElement{
+		{ResourceID: "cart-button", Text: "Cart"},
+		{ResourceID: "product-item-Appium", Text: "product-item-Appium"},
+	}
+	sel := flow.Selector{ID: "cart-button", Text: "product-item-Appium"}
+	if got := FilterBySelector(elements, sel, "android"); len(got) != 0 {
+		t.Errorf("id and text are on different elements; expected no match, got %+v", got[0])
+	}
+}
+
+// A regex selector is not a literal and must keep regex semantics.
+func TestFilterBySelector_RegexUnaffectedByExactPreference(t *testing.T) {
+	elements := []*ParsedElement{{Text: "7000.00"}, {Text: "0"}}
+	got := FilterBySelector(elements, flow.Selector{Text: ".*000.*"}, "android")
+	if len(got) != 1 || got[0].Text != "7000.00" {
+		t.Fatalf("expected the regex to select 7000.00, got %+v", got)
 	}
 }

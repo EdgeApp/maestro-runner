@@ -1354,6 +1354,7 @@ func (d *Driver) snapshotMatching(sel flow.Selector) ([]SnapshotNode, error) {
 		}
 	}
 	hits = preferExactID(hits, sel)
+	hits = preferExactText(hits, sel)
 	hits = preferExactCase(hits, sel.Text)
 	// Always prefer editable inputs / interactive controls when multiple
 	// nodes match. Applies to id-selectors too: RN TextInputs often share

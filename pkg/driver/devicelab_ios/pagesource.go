@@ -102,6 +102,40 @@ func preferExactID(hits []SnapshotNode, sel flow.Selector) []SnapshotNode {
 	return hits
 }
 
+// preferExactText narrows survivors to those whose text matches the literal
+// pattern exactly, when any of them do.
+//
+// Literal text matched by contains alone, so `text: "0"` resolved to a price
+// field reading "7000.00" ahead of the switch whose text is exactly "0", and
+// the tap landed in the wrong place. Upstream Maestro does not have this
+// problem because its matcher is a full match (Filters.kt uses
+// `regex.matches(value)`), so "0" never matches "7000.00" there at all; our
+// contains behaviour is the deviation. Preferring exact matches keeps the
+// looser behaviour available for the genuine substring selectors flows rely
+// on, while giving the specific element priority when one exists.
+//
+// Applied AFTER the full selector has been satisfied, never instead of it. An
+// exact text match that skipped the rest of the selector would return an
+// element with the right text and the wrong id — the OR behaviour removed in
+// #157/#158/#160. Reported by @nt-ben-leblond (#161).
+//
+// Same rule as preferExactID above, for text.
+func preferExactText(hits []SnapshotNode, sel flow.Selector) []SnapshotNode {
+	if sel.Text == "" || looksLikeRegex(sel.Text) || len(hits) < 2 {
+		return hits
+	}
+	var exact []SnapshotNode
+	for _, n := range hits {
+		if strings.EqualFold(n.Label, sel.Text) || strings.EqualFold(n.Value, sel.Text) || strings.EqualFold(n.PlaceholderValue, sel.Text) {
+			exact = append(exact, n)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return hits
+}
+
 // matchesText returns true if `pattern` matches any of the given texts.
 // Empty texts are skipped. Pattern may be:
 //   - exact (case-insensitive)

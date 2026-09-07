@@ -91,6 +91,7 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		} else {
 			strategies = append(clickableStrategies, allStrategies...)
 		}
+		strategies = exactTextFirst(strategies)
 
 		timeout := d.calculateTimeout(step.IsOptional(), step.TimeoutMs)
 		ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
