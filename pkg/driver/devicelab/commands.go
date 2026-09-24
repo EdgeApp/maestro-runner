@@ -1604,7 +1604,28 @@ func (d *Driver) swipeWithAbsoluteCoords(startX, startY, endX, endY, durationMs 
 // Navigation Commands
 // ============================================================================
 
+// Key presses after a tap wait for the UI to settle, as Maestro settles after
+// every tap. A key press carries no selector, so nothing else waits: a back
+// pressed while the tapped sheet was still closing was swallowed by it
+// (duckduckgo's "Save Password" → back never reached the page).
+const (
+	settleAfterTapTimeoutMs = 2000
+	settleAfterTapQuietMs   = 500
+)
+
+func (d *Driver) settleAfterTap() {
+	if !d.lastStepWasTap {
+		return
+	}
+	if settled, err := d.client.WaitForSettle(settleAfterTapTimeoutMs, settleAfterTapQuietMs); err != nil {
+		logger.Debug("[devicelab] settle after tap: %v", err)
+	} else if !settled {
+		logger.Debug("[devicelab] settle after tap: still changing after %dms", settleAfterTapTimeoutMs)
+	}
+}
+
 func (d *Driver) back(_ *flow.BackStep) *core.CommandResult {
+	d.settleAfterTap()
 	if err := d.client.Back(); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to press back: %v", err))
 	}
@@ -1619,6 +1640,7 @@ func (d *Driver) pressKey(step *flow.PressKeyStep) *core.CommandResult {
 		return errorResult(fmt.Errorf("unknown key: %s", key), fmt.Sprintf("Unknown key: %s", key))
 	}
 
+	d.settleAfterTap()
 	if err := d.client.PressKeyCode(keyCode); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to press key: %v", err))
 	}

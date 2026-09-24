@@ -117,6 +117,9 @@ type Driver struct {
 	// Keyboard auto-dismiss: set after inputText/inputRandom, checked on next tap/assert
 	lastStepWasInput bool
 
+	// Set after a successful tap; back/pressKey settle first when it is set
+	lastStepWasTap bool
+
 	// Text of the last WebView label a tap targeted, used to find and drive the
 	// matching cross-origin iframe input over CDP when the following inputText
 	// can't reach it natively (Shopify checkout's hosted card fields). Persists
@@ -636,6 +639,12 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 		d.lastStepWasInput = result.Success
 	default:
 		d.lastStepWasInput = false
+	}
+	switch step.(type) {
+	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep:
+		d.lastStepWasTap = result.Success
+	default:
+		d.lastStepWasTap = false
 	}
 
 	result.Duration = time.Since(start)
