@@ -67,3 +67,18 @@ func TestCopyTextFromSettlesAfterTap(t *testing.T) {
 		t.Errorf("copyTextFrom after a tap settled %d times, want 1", client.settles)
 	}
 }
+
+// Enter settles after it is pressed; other keys do not.
+func TestEnterSettlesAfterPress(t *testing.T) {
+	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
+	d := New(client, &core.PlatformInfo{}, &mockShell{})
+
+	d.pressKey(&flow.PressKeyStep{Key: "back"})
+	if client.settles != 0 {
+		t.Fatalf("back settled %d times", client.settles)
+	}
+	d.pressKey(&flow.PressKeyStep{Key: "Enter"})
+	if client.settles != 1 {
+		t.Errorf("enter settled %d times, want 1", client.settles)
+	}
+}

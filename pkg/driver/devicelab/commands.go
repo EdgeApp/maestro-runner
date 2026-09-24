@@ -1647,6 +1647,19 @@ func (d *Driver) pressKey(step *flow.PressKeyStep) *core.CommandResult {
 		return errorResult(err, fmt.Sprintf("Failed to press key: %v", err))
 	}
 
+	// Enter submits or navigates, and Maestro waits for the app to settle
+	// after a key press. Without it the next step read the screen Enter was
+	// about to replace: a `when: visible:` check 60ms later still saw
+	// duckduckgo's native input widget, and the tap it guarded then found
+	// nothing once the page had loaded.
+	if keyCode == uiautomator2.KeyCodeEnter && !d.isBrowserMode() {
+		if settled, err := d.client.WaitForSettle(openLinkSettleTimeoutMs, openLinkSettleQuietMs); err != nil {
+			logger.Debug("[devicelab] settle after enter: %v", err)
+		} else if !settled {
+			logger.Debug("[devicelab] settle after enter: still changing after %dms", openLinkSettleTimeoutMs)
+		}
+	}
+
 	return successResult(fmt.Sprintf("Pressed key: %s", key), nil)
 }
 
