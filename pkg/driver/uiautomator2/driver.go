@@ -469,15 +469,20 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 
 	if sel.Text != "" {
 		if looksLikeRegex(sel.Text) {
-			pattern := "(?s)" + escapeUIAutomatorString(sel.Text)
-			strategies = append(strategies, LocatorStrategy{
-				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().textMatches("` + pattern + `").clickable(true)` + stateFilters,
-			})
-			strategies = append(strategies, LocatorStrategy{
-				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().descriptionMatches("` + pattern + `").clickable(true)` + stateFilters,
-			})
+			// Case as written first, then ignoring case, as Maestro matches
+			// (IGNORE_CASE): the ignore-case pass finds "Let's get started!"
+			// for `(let's get started!|...)`, and the first pass still prefers
+			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
+			for _, pattern := range []string{"(?s)" + escapeUIAutomatorString(sel.Text), "(?is)" + escapeUIAutomatorString(sel.Text)} {
+				strategies = append(strategies, LocatorStrategy{
+					Strategy: uiautomator2.StrategyUIAutomator,
+					Value:    `new UiSelector().textMatches("` + pattern + `").clickable(true)` + stateFilters,
+				})
+				strategies = append(strategies, LocatorStrategy{
+					Strategy: uiautomator2.StrategyUIAutomator,
+					Value:    `new UiSelector().descriptionMatches("` + pattern + `").clickable(true)` + stateFilters,
+				})
+			}
 		} else {
 			escaped := escapeUIAutomatorString(sel.Text)
 			strategies = append(strategies, LocatorStrategy{
@@ -1196,9 +1201,14 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 	var textTiers [][]string
 	if sel.Text != "" {
 		if looksLikeRegex(sel.Text) {
-			pattern := "(?s)" + escapeUIAutomatorString(sel.Text)
+			// Case as written first, then ignoring case, as Maestro matches
+			// (IGNORE_CASE): the ignore-case pass finds "Let's get started!"
+			// for `(let's get started!|...)`, and the first pass still prefers
+			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
+			pattern := escapeUIAutomatorString(sel.Text)
 			textTiers = [][]string{
-				{`.textMatches("` + pattern + `")`, `.descriptionMatches("` + pattern + `")`},
+				{`.textMatches("(?s)` + pattern + `")`, `.descriptionMatches("(?s)` + pattern + `")`},
+				{`.textMatches("(?is)` + pattern + `")`, `.descriptionMatches("(?is)` + pattern + `")`},
 			}
 		} else {
 			escaped := escapeUIAutomatorString(sel.Text)

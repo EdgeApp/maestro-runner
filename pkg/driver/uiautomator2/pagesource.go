@@ -219,7 +219,7 @@ func FilterBySelector(elements []*ParsedElement, sel flow.Selector) []*ParsedEle
 		result = append(result, elem)
 	}
 
-	return result
+	return preferExactCase(result, sel.Text, func(e *ParsedElement) []string { return regexTextsOf(e) })
 }
 
 func matchesSelector(elem *ParsedElement, sel flow.Selector) bool {
@@ -296,16 +296,15 @@ func matchesID(pattern, id string) bool {
 func matchesText(pattern, text, contentDesc, hintText string) bool {
 	// Check if pattern looks like a regex
 	if looksLikeRegex(pattern) {
-		// Case-sensitive, deliberately. Compiling with (?i) meant an anchored
-		// pattern could not distinguish what it was written to distinguish:
-		// `^SIGN OUT$` matched a "Sign out" row as readily as the "SIGN OUT"
-		// button, and whichever came first in the page source won (#151).
-		// Maestro matches regex selectors case-sensitively, and a flow written
-		// against it has to behave the same here.
+		// Case-insensitive, as in Maestro, which compiles every text selector
+		// with IGNORE_CASE: a flow written `(let's get started!|...)` passes
+		// there against "Let's get started!". When several elements match,
+		// FilterBySelector puts the ones matching in the pattern's own case
+		// first, so `^SIGN OUT$` still picks the "SIGN OUT" button over a
+		// "Sign out" row (#151).
 		//
-		// Plain text selectors are untouched — they are not regexes, and fall
-		// to the case-insensitive contains path below.
-		re, err := regexp.Compile(pattern)
+		// Plain text selectors fall to the case-insensitive contains path below.
+		re, err := regexp.Compile("(?i)" + pattern)
 		if err != nil {
 			// Invalid regex - fall back to literal matching
 			return containsIgnoreCase(text, pattern) ||
@@ -675,4 +674,40 @@ func matchesErrorText(pattern, errorText string) bool {
 		return false
 	}
 	return matchesText(pattern, errorText, "", "")
+}
+
+// preferExactCase puts the elements a regex text selector matches in its own
+// case ahead of those it matches only when case is ignored, keeping order
+// otherwise. Plain text and single matches are returned unchanged.
+func preferExactCase(elems []*ParsedElement, pattern string, textsOf func(*ParsedElement) []string) []*ParsedElement {
+	if len(elems) < 2 || !looksLikeRegex(pattern) {
+		return elems
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return elems
+	}
+	var exact, rest []*ParsedElement
+	for _, e := range elems {
+		if anyMatches(re, textsOf(e)) {
+			exact = append(exact, e)
+		} else {
+			rest = append(rest, e)
+		}
+	}
+	return append(exact, rest...)
+}
+
+func anyMatches(re *regexp.Regexp, texts []string) bool {
+	for _, t := range texts {
+		if t != "" && (re.MatchString(t) || re.MatchString(strings.ReplaceAll(t, "\n", " "))) {
+			return true
+		}
+	}
+	return false
+}
+
+// regexTextsOf lists the attributes a text selector is matched against.
+func regexTextsOf(e *ParsedElement) []string {
+	return []string{e.Text, e.ContentDesc, e.HintText}
 }

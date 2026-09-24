@@ -1106,15 +1106,20 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 		// the literal string ".*For You.*" instead of "anything around For You".
 		if looksLikeRegex(sel.Text) {
 			regexEscaped := escapeUIAutomatorString(sel.Text)
-			pattern := "(?s)" + regexEscaped
-			strategies = append(strategies, LocatorStrategy{
-				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().textMatches("` + pattern + `").clickable(true)` + stateFilters,
-			})
-			strategies = append(strategies, LocatorStrategy{
-				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().descriptionMatches("` + pattern + `").clickable(true)` + stateFilters,
-			})
+			// Case as written first, then ignoring case, as Maestro matches
+			// (IGNORE_CASE): the ignore-case pass finds "Let's get started!"
+			// for `(let's get started!|...)`, and the first pass still prefers
+			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
+			for _, pattern := range []string{"(?s)" + regexEscaped, "(?is)" + regexEscaped} {
+				strategies = append(strategies, LocatorStrategy{
+					Strategy: uiautomator2.StrategyUIAutomator,
+					Value:    `new UiSelector().textMatches("` + pattern + `").clickable(true)` + stateFilters,
+				})
+				strategies = append(strategies, LocatorStrategy{
+					Strategy: uiautomator2.StrategyUIAutomator,
+					Value:    `new UiSelector().descriptionMatches("` + pattern + `").clickable(true)` + stateFilters,
+				})
+			}
 		}
 	}
 
@@ -1824,11 +1829,15 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 		// escape Java-string quotes. Escaping regex metachars here would defeat
 		// the regex (turns `.*` into `\.\*`, matching the literal ".*").
 		if looksLikeRegex(sel.Text) {
-			pattern := "(?s)" + escapeUIAutomatorString(sel.Text)
-			textTiers = append(textTiers, []string{
-				`.textMatches("` + pattern + `")`,
-				`.descriptionMatches("` + pattern + `")`,
-			})
+			// Case as written first, then ignoring case, as Maestro matches
+			// (IGNORE_CASE): the ignore-case pass finds "Let's get started!"
+			// for `(let's get started!|...)`, and the first pass still prefers
+			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
+			pattern := escapeUIAutomatorString(sel.Text)
+			textTiers = append(textTiers,
+				[]string{`.textMatches("(?s)` + pattern + `")`, `.descriptionMatches("(?s)` + pattern + `")`},
+				[]string{`.textMatches("(?is)` + pattern + `")`, `.descriptionMatches("(?is)` + pattern + `")`},
+			)
 		}
 	}
 

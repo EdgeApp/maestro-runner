@@ -113,9 +113,11 @@ func matchesText(pattern string, texts ...string) bool {
 	}
 	patternLower := strings.ToLower(pattern)
 
-	// Try regex first if pattern looks regex-ish.
+	// Try regex first if pattern looks regex-ish. Case-insensitive, as in
+	// Maestro (IGNORE_CASE); snapshotMatching puts matches in the pattern's
+	// own case first when several elements match (#151).
 	if looksLikeRegex(pattern) {
-		if re, err := regexp.Compile(pattern); err == nil {
+		if re, err := regexp.Compile("(?i)" + pattern); err == nil {
 			for _, t := range texts {
 				if t != "" && re.MatchString(t) {
 					return true
@@ -222,4 +224,33 @@ func selectByIndex(candidates []*SnapshotNode, index string) *SnapshotNode {
 		return candidates[0]
 	}
 	return candidates[i]
+}
+
+// preferExactCase puts the nodes a regex text selector matches in its own case
+// ahead of those it matches only when case is ignored, keeping order otherwise,
+// so `^SIGN OUT$` picks the "SIGN OUT" button over a "Sign out" row (#151).
+func preferExactCase(nodes []SnapshotNode, pattern string) []SnapshotNode {
+	if len(nodes) < 2 || !looksLikeRegex(pattern) {
+		return nodes
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nodes
+	}
+	var exact, rest []SnapshotNode
+	for _, n := range nodes {
+		hit := false
+		for _, t := range []string{n.Label, n.Value, n.PlaceholderValue} {
+			if t != "" && re.MatchString(t) {
+				hit = true
+				break
+			}
+		}
+		if hit {
+			exact = append(exact, n)
+		} else {
+			rest = append(rest, n)
+		}
+	}
+	return append(exact, rest...)
 }
