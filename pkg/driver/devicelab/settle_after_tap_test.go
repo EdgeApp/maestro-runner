@@ -42,3 +42,17 @@ func TestKeyPressSettlesOnlyAfterTap(t *testing.T) {
 		t.Fatalf("back after a key press settled again: %d", client.settles)
 	}
 }
+
+// openLink waits for the app to settle, so the next step reads the page the
+// link opened rather than the one it replaced.
+func TestOpenLinkSettles(t *testing.T) {
+	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
+	d := New(client, &core.PlatformInfo{}, &mockShell{})
+
+	if res := d.openLink(&flow.OpenLinkStep{Link: "duck://https://duckduckgo.com?q=x"}); !res.Success {
+		t.Fatalf("openLink failed: %v", res.Error)
+	}
+	if client.settles != 1 {
+		t.Errorf("openLink settled %d times, want 1", client.settles)
+	}
+}

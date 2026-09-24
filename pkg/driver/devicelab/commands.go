@@ -1609,6 +1609,8 @@ func (d *Driver) swipeWithAbsoluteCoords(startX, startY, endX, endY, durationMs 
 // pressed while the tapped sheet was still closing was swallowed by it
 // (duckduckgo's "Save Password" → back never reached the page).
 const (
+	openLinkSettleTimeoutMs = 5000
+	openLinkSettleQuietMs   = 500
 	settleAfterTapTimeoutMs = 2000
 	settleAfterTapQuietMs   = 500
 )
@@ -2258,6 +2260,18 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 
 	if step.AutoVerify != nil && *step.AutoVerify {
 		time.Sleep(2 * time.Second)
+	}
+
+	// Maestro waits for the app to settle after opening a link. Without it the
+	// next step reads the screen the link has not replaced yet: a copyTextFrom
+	// on duckduckgo's address bar copied the "Search" placeholder, then the
+	// loading URL, instead of the query the results page shows.
+	if !d.isBrowserMode() {
+		if settled, err := d.client.WaitForSettle(openLinkSettleTimeoutMs, openLinkSettleQuietMs); err != nil {
+			logger.Debug("[devicelab] settle after openLink: %v", err)
+		} else if !settled {
+			logger.Debug("[devicelab] settle after openLink: still changing after %dms", openLinkSettleTimeoutMs)
+		}
 	}
 
 	return successResult(fmt.Sprintf("Opened link: %s", link), nil)
