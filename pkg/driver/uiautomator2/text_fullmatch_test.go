@@ -1,0 +1,24 @@
+package uiautomator2
+
+import "testing"
+
+// A regex text selector must match the whole string, as in Maestro:
+// `Passwords.*` is the "Passwords" row, not "Import Passwords from Google".
+func TestMatchesTextRegexMatchesWholeString(t *testing.T) {
+	cases := []struct {
+		pattern, text string
+		want          bool
+	}{
+		{"Passwords.*", "Import Passwords from Google", false},
+		{"Passwords.*", "Passwords", true},
+		{"Passwords.*", "passwords & Autofill", true},
+		{"Last updated.*", "Last updated\nyesterday", true},
+		{"(Sign in|Log in)", "Sign in with Google", false},
+		{".*Google", "Import Passwords from Google", true},
+	}
+	for _, c := range cases {
+		if got := matchesText(c.pattern, c.text, "", ""); got != c.want {
+			t.Errorf("matchesText(%q, %q) = %v, want %v", c.pattern, c.text, got, c.want)
+		}
+	}
+}

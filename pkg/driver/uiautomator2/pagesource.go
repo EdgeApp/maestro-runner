@@ -303,8 +303,12 @@ func matchesText(pattern, text, contentDesc, hintText string) bool {
 		// first, so `^SIGN OUT$` still picks the "SIGN OUT" button over a
 		// "Sign out" row (#151).
 		//
+		// The whole string must match, as with Maestro's Regex.matches():
+		// `Passwords.*` is the "Passwords" row, not "Import Passwords from
+		// Google". Maestro also compiles with DOT_MATCHES_ALL.
+		//
 		// Plain text selectors fall to the case-insensitive contains path below.
-		re, err := regexp.Compile("(?i)" + pattern)
+		re, err := regexp.Compile(`(?is)\A(?:` + pattern + `)\z`)
 		if err != nil {
 			// Invalid regex - fall back to literal matching
 			return containsIgnoreCase(text, pattern) ||
