@@ -36,7 +36,9 @@ func backStep() *flow.BackStep {
 }
 
 func TestExecute_SuccessTapStep(t *testing.T) {
-	d := New(Config{})
+	// A delay keeps the step longer than the clock's resolution, so the
+	// duration check does not flake to 0 on a fast run.
+	d := New(Config{StepDelay: time.Millisecond})
 	res := d.Execute(tapStep())
 	if !res.Success {
 		t.Fatalf("expected success, got: %v", res.Error)
