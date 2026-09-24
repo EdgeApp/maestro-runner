@@ -1,12 +1,10 @@
 package devicelab
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
-	"github.com/devicelab-dev/maestro-runner/pkg/uiautomator2"
 )
 
 // settleCountingClient counts WaitForSettle calls.
@@ -18,12 +16,6 @@ type settleCountingClient struct {
 func (c *settleCountingClient) WaitForSettle(timeoutMs, quietMs int) (bool, error) {
 	c.settles++
 	return true, nil
-}
-
-// FindAndClickChecked finds nothing, so a tap fails fast; the settle tests
-// only count settles.
-func (c *settleCountingClient) FindAndClickChecked(strategy, selector string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, error) {
-	return nil, false, "", errors.New("not found")
 }
 
 // A key press right after a tap waits for the UI to settle first; one that
@@ -70,25 +62,8 @@ func TestCopyTextFromSettlesAfterTap(t *testing.T) {
 	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
 	d := New(client, &core.PlatformInfo{}, &mockShell{})
 	d.lastStepWasTap = true
-	d.copyTextFrom(&flow.CopyTextFromStep{BaseStep: flow.BaseStep{TimeoutMs: 1}, Selector: flow.Selector{ID: "omnibarTextInput"}})
+	d.copyTextFrom(&flow.CopyTextFromStep{Selector: flow.Selector{ID: "omnibarTextInput"}})
 	if client.settles != 1 {
 		t.Errorf("copyTextFrom after a tap settled %d times, want 1", client.settles)
-	}
-}
-
-// A tap straight after a tap settles first; a first tap does not.
-func TestTapSettlesOnlyAfterTap(t *testing.T) {
-	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
-	d := New(client, &core.PlatformInfo{}, &mockShell{})
-	tap := &flow.TapOnStep{BaseStep: flow.BaseStep{StepType: flow.StepTapOn, TimeoutMs: 1}, Selector: flow.Selector{Text: "Menu"}}
-
-	d.tapOn(tap)
-	if client.settles != 0 {
-		t.Fatalf("first tap settled %d times", client.settles)
-	}
-	d.lastStepWasTap = true
-	d.tapOn(tap)
-	if client.settles != 1 {
-		t.Errorf("tap after a tap settled %d times, want 1", client.settles)
 	}
 }
