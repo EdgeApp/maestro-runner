@@ -334,9 +334,25 @@ func matchesText(pattern, text, contentDesc, hintText string) bool {
 	}
 
 	// Literal text - case-insensitive contains
-	return containsIgnoreCase(text, pattern) ||
+	if containsIgnoreCase(text, pattern) ||
 		containsIgnoreCase(contentDesc, pattern) ||
-		containsIgnoreCase(hintText, pattern)
+		containsIgnoreCase(hintText, pattern) {
+		return true
+	}
+
+	// A lone dot reads as plain text ("Mr. Smith"), but Maestro compiles every
+	// text selector as a regex, where it matches any character:
+	// "Protections.activated!" is the "Protections activated!" heading.
+	if strings.Contains(pattern, ".") {
+		if re, err := regexp.Compile(`(?is)\A(?:` + pattern + `)\z`); err == nil {
+			for _, s := range []string{text, contentDesc, hintText} {
+				if s != "" && (re.MatchString(s) || re.MatchString(strings.ReplaceAll(s, "\n", " "))) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // containsIgnoreCase checks if s contains substr (case-insensitive).

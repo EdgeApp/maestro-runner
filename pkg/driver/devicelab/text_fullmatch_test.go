@@ -15,6 +15,10 @@ func TestMatchesTextRegexMatchesWholeString(t *testing.T) {
 		{"Last updated.*", "Last updated\nyesterday", true},
 		{"(Sign in|Log in)", "Sign in with Google", false},
 		{".*Google", "Import Passwords from Google", true},
+		// A lone dot is a wildcard too, and plain text still matches by contains.
+		{"Protections.activated!", "Protections activated!", true},
+		{"Protections.activated!", "Protections activated! Search privately", false},
+		{"Mr. Smith", "Hello Mr. Smith", true},
 	}
 	for _, c := range cases {
 		if got := matchesText(c.pattern, c.text, "", ""); got != c.want {
