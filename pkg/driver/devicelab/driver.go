@@ -1791,7 +1791,12 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 		escaped := escapeUIAutomatorString(sel.ID)
 		idTiers = [][]string{
 			{`.resourceId("` + escaped + `")`},
-			{`.resourceIdMatches(".*` + escaped + `.*")`},
+			// Grouped, so an id written as a regex alternation
+			// ("omnibarTextInput|inputField") keeps both alternatives inside
+			// the wildcards. Ungrouped, `|` split the whole pattern into
+			// ".*omnibarTextInput" or "inputField.*", and neither matched a
+			// full resource id like "com.app:id/inputField".
+			{`.resourceIdMatches(".*(?:` + escaped + `).*")`},
 		}
 	}
 
