@@ -56,3 +56,14 @@ func TestOpenLinkSettles(t *testing.T) {
 		t.Errorf("openLink settled %d times, want 1", client.settles)
 	}
 }
+
+// copyTextFrom right after a tap settles first, so it reads what the tap led to.
+func TestCopyTextFromSettlesAfterTap(t *testing.T) {
+	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
+	d := New(client, &core.PlatformInfo{}, &mockShell{})
+	d.lastStepWasTap = true
+	d.copyTextFrom(&flow.CopyTextFromStep{Selector: flow.Selector{ID: "omnibarTextInput"}})
+	if client.settles != 1 {
+		t.Errorf("copyTextFrom after a tap settled %d times, want 1", client.settles)
+	}
+}

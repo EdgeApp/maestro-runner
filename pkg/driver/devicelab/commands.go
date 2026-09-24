@@ -1604,8 +1604,8 @@ func (d *Driver) swipeWithAbsoluteCoords(startX, startY, endX, endY, durationMs 
 // Navigation Commands
 // ============================================================================
 
-// Key presses after a tap wait for the UI to settle, as Maestro settles after
-// every tap. A key press carries no selector, so nothing else waits: a back
+// Key presses and copyTextFrom after a tap wait for the UI to settle, as
+// Maestro settles after every tap. Nothing else waits for them: a back
 // pressed while the tapped sheet was still closing was swallowed by it
 // (duckduckgo's "Save Password" → back never reached the page).
 const (
@@ -2095,6 +2095,10 @@ func getAllPermissions() []string {
 // ============================================================================
 
 func (d *Driver) copyTextFrom(step *flow.CopyTextFromStep) *core.CommandResult {
+	// The element is usually already there, so finding it does not wait for
+	// what the tap before started: duckduckgo's spoofing page swaps the
+	// address bar to about:blank a moment after "run" is tapped.
+	d.settleAfterTap()
 	elem, info, err := d.findElement(step.Selector, step.IsOptional(), step.TimeoutMs)
 	if err != nil {
 		return errorResult(err, fmt.Sprintf("Element not found: %v", err))
