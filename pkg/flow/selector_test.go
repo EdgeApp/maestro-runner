@@ -1155,3 +1155,26 @@ func TestExtractSelectors(t *testing.T) {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+// An explicit empty text selector matches, as Maestro's empty regex does;
+// an absent text stays empty.
+func TestSelector_UnmarshalYAML_EmptyText(t *testing.T) {
+	cases := []struct {
+		yaml, want string
+	}{
+		{`text: ""`, ".*"},
+		{`""`, ".*"},
+		{`id: foo`, ""},
+		{`{text: "", id: foo}`, ""},
+		{`text: Login`, "Login"},
+	}
+	for _, c := range cases {
+		var s Selector
+		if err := yaml.Unmarshal([]byte(c.yaml), &s); err != nil {
+			t.Fatalf("%s: %v", c.yaml, err)
+		}
+		if s.Text != c.want {
+			t.Errorf("%s: Text = %q, want %q", c.yaml, s.Text, c.want)
+		}
+	}
+}

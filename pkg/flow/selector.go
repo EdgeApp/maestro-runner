@@ -122,6 +122,9 @@ type selectorRaw struct {
 func (s *Selector) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.ScalarNode {
 		s.Text = node.Value
+		if node.Tag != "!!null" {
+			s.Text = emptyTextPattern(s.Text)
+		}
 		return nil
 	}
 
@@ -178,7 +181,33 @@ func (s *Selector) UnmarshalYAML(node *yaml.Node) error {
 		s.Text = raw.Element
 	}
 
+	if s.IsEmpty() && hasEmptyTextKey(node) {
+		s.Text = emptyTextPattern("")
+	}
+
 	return nil
+}
+
+// emptyTextPattern turns an explicitly empty text selector into one that
+// matches. Maestro compiles `text: ""` to an empty regex, which matches the
+// many elements with no text, so `assertVisible: ""` passes there; here an
+// empty Text would read as "no selector" and fail every time.
+func emptyTextPattern(text string) string {
+	if text == "" {
+		return ".*"
+	}
+	return text
+}
+
+// hasEmptyTextKey reports whether a selector map spells out `text: ""`.
+func hasEmptyTextKey(node *yaml.Node) bool {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k, v := node.Content[i], node.Content[i+1]
+		if k.Value == "text" && v.Kind == yaml.ScalarNode && v.Value == "" && v.Tag != "!!null" {
+			return true
+		}
+	}
+	return false
 }
 
 // IsEmpty returns true if no selector properties are set.
