@@ -810,6 +810,25 @@ func (d *Driver) assertNotVisibleBrowser(sel flow.Selector, timeoutMs int) *core
 // Input Commands
 // ============================================================================
 
+// focusWaitForTyping is how long inputText without a selector waits for a
+// field to take focus before typing blind.
+const focusWaitForTyping = time.Second
+
+// waitForFocused polls for the focused element for up to wait, returning nil
+// when nothing takes focus in that time.
+func (d *Driver) waitForFocused(wait time.Duration) core.Element {
+	deadline := time.Now().Add(wait)
+	for {
+		if focused, err := d.findFocused(); err == nil && focused != nil {
+			return focused
+		}
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 	text := step.Text
 	if text == "" {
@@ -905,8 +924,15 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 		// dragged a fragile focused=true selector-search fallback with it.
 		// This reintroduction is a single findFocused round-trip with a
 		// plain key-events fallback — no selector search.
+		//
+		// Focus can still be on its way when the step starts: an app that
+		// focuses its input a moment after a screen appears (duckduckgo's
+		// address bar after onboarding) reported nothing focused, the text
+		// went out as blind key events, and the first keystrokes arrived
+		// before the field did — "https://…" landed as "tps://…". Wait
+		// briefly for focus, as Maestro's settle-before-command does.
 		typed := false
-		if focused, err := d.findFocused(); err == nil && focused != nil {
+		if focused := d.waitForFocused(focusWaitForTyping); focused != nil {
 			before, _ := focused.Text()
 			if err := focused.Input(text); err == nil {
 				typed = true
@@ -916,6 +942,12 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 		if !typed {
 			if err := d.client.SendKeyActions(text); err != nil {
 				return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
+			}
+			// The key events went wherever focus landed. Read that field back
+			// so characters lost before it took focus are retyped; without a
+			// field to read, this path used to pass with no check at all.
+			if focused, err := d.findFocused(); err == nil && focused != nil {
+				typedInto = focused
 			}
 		}
 	}
