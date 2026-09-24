@@ -209,7 +209,35 @@ func FilterBySelector(elements []*ParsedElement, sel flow.Selector) []*ParsedEle
 		result = append(result, elem)
 	}
 
+	result = preferExactID(result, sel.ID)
 	return preferExactCase(result, sel.Text, func(e *ParsedElement) []string { return regexTextsOf(e) })
+}
+
+// preferExactID keeps only the matches whose whole id matches the selector —
+// the full resource-id or the part after the last "/", as Maestro matches ids —
+// when there are any. The substring match otherwise lets a superset id win:
+// `omnibarTextInput|inputField` also hits the empty
+// `omnibarTextInputClickCatcher` overlay, and copyTextFrom copied nothing.
+// With no whole-id match the lenient set is kept.
+func preferExactID(elems []*ParsedElement, id string) []*ParsedElement {
+	if id == "" || len(elems) < 2 {
+		return elems
+	}
+	re, err := regexp.Compile(`\A(?:` + id + `)\z`)
+	if err != nil {
+		return elems
+	}
+	var exact []*ParsedElement
+	for _, e := range elems {
+		short := e.ResourceID[strings.LastIndex(e.ResourceID, "/")+1:]
+		if re.MatchString(e.ResourceID) || re.MatchString(short) {
+			exact = append(exact, e)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return elems
 }
 
 func matchesSelector(elem *ParsedElement, sel flow.Selector) bool {
