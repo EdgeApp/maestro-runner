@@ -1772,6 +1772,36 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 // launchWaitTimeoutSec bounds how long `am start-activity -W` may wait.
 const launchWaitTimeoutSec = 30
 
+// launchShellTimeout bounds each shell call of the launch fallback on the
+// host, beyond the device-side timeout: a run once sat ten minutes in it.
+const launchShellTimeout = 45 * time.Second
+
+// shellBounded runs a shell command with a deadline, through the device's
+// ShellTimeout when it has one (it kills the stuck adb), else by abandoning
+// the call.
+func (d *Driver) shellBounded(cmd string, timeout time.Duration) (string, error) {
+	if s, ok := d.device.(interface {
+		ShellTimeout(cmd string, timeout time.Duration) (string, error)
+	}); ok {
+		return s.ShellTimeout(cmd, timeout)
+	}
+	type result struct {
+		out string
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		out, err := d.device.Shell(cmd)
+		ch <- result{out, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.out, r.err
+	case <-time.After(timeout):
+		return "", fmt.Errorf("shell timed out after %v: %s", timeout, cmd)
+	}
+}
+
 // launchAppViaShell launches an app using ADB shell commands.
 func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{}) *core.CommandResult {
 	apiLevel := d.getAPILevel()
@@ -1829,7 +1859,7 @@ func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{
 		}
 	}
 
-	output, err := d.device.Shell(cmd)
+	output, err := d.shellBounded(cmd, launchShellTimeout)
 	if err != nil && strings.Contains(output, "Starting: Intent") && !strings.Contains(output, "Error") {
 		// The intent went out and only the -W wait timed out.
 		logger.Warn("launchApp: %s did not report the launch complete within %ds — continuing", appID, launchWaitTimeoutSec)
@@ -1841,7 +1871,7 @@ func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{
 			if dotActivity != activity {
 				logger.Info("launchApp: retrying with dot-prefixed activity: %s", dotActivity)
 				retryCmd := strings.Replace(cmd, activity, dotActivity, 1)
-				if output2, err2 := d.device.Shell(retryCmd); err2 == nil && !strings.Contains(output2, "Error") {
+				if output2, err2 := d.shellBounded(retryCmd, launchShellTimeout); err2 == nil && !strings.Contains(output2, "Error") {
 					return successResult(fmt.Sprintf("Launched app: %s", appID), nil)
 				}
 			}
@@ -1866,7 +1896,7 @@ func (d *Driver) getAPILevel() int {
 	if d.cachedAPILevel > 0 {
 		return d.cachedAPILevel
 	}
-	output, err := d.device.Shell("getprop ro.build.version.sdk")
+	output, err := d.shellBounded("getprop ro.build.version.sdk", launchShellTimeout)
 	if err != nil {
 		return 24
 	}
@@ -1900,7 +1930,7 @@ func (d *Driver) resolveLauncherActivityCached(appID string, apiLevel int) (stri
 func (d *Driver) resolveLauncherActivity(appID string, apiLevel int) (string, error) {
 	if apiLevel >= 24 {
 		resolveCmd := fmt.Sprintf("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER %s | tail -n 1", appID)
-		output, err := d.device.Shell(resolveCmd)
+		output, err := d.shellBounded(resolveCmd, launchShellTimeout)
 		if err == nil {
 			activity := strings.TrimSpace(output)
 			if activity != "" &&
@@ -1918,7 +1948,7 @@ func (d *Driver) resolveLauncherActivity(appID string, apiLevel int) (string, er
 // launchWithMonkey launches an app using the monkey command.
 func (d *Driver) launchWithMonkey(appID string) *core.CommandResult {
 	monkeyCmd := fmt.Sprintf("monkey -p %s -c android.intent.category.LAUNCHER 1", appID)
-	output, err := d.device.Shell(monkeyCmd)
+	output, err := d.shellBounded(monkeyCmd, launchShellTimeout)
 	if err != nil || strings.Contains(output, "monkey aborted") {
 		errMsg := fmt.Sprintf("launchApp: all launch methods failed for '%s'. "+
 			"The app may not be installed or has no launcher activity. "+
@@ -1946,7 +1976,7 @@ func (d *Driver) addDotPrefix(activity string) string {
 
 // resolveLauncherFromDumpsys parses `dumpsys package` output to find the MAIN/LAUNCHER activity.
 func (d *Driver) resolveLauncherFromDumpsys(appID string) (string, error) {
-	output, err := d.device.Shell(fmt.Sprintf("dumpsys package %s", appID))
+	output, err := d.shellBounded(fmt.Sprintf("dumpsys package %s", appID), launchShellTimeout)
 	if err != nil {
 		return "", fmt.Errorf("dumpsys failed for %s: %w", appID, err)
 	}
