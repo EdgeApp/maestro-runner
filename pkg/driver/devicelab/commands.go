@@ -1754,6 +1754,9 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	return successResult(fmt.Sprintf("Launched app: %s", appID), nil)
 }
 
+// launchWaitTimeoutSec bounds how long `am start-activity -W` may wait.
+const launchWaitTimeoutSec = 30
+
 // launchAppViaShell launches an app using ADB shell commands.
 func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{}) *core.CommandResult {
 	apiLevel := d.getAPILevel()
@@ -1775,7 +1778,12 @@ func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{
 
 	amCmd := "am start"
 	if apiLevel >= 26 {
-		amCmd = "am start-activity"
+		// -W waits for the launch to report complete, and when that report
+		// never comes it waits forever: a run hung 90 minutes here after
+		// duckduckgo's launch intent briefly failed to resolve. Bound the
+		// wait on the device (toybox timeout, API 26+); the launch is already
+		// dispatched, and the next step's find decides whether it came up.
+		amCmd = fmt.Sprintf("timeout %d am start-activity", launchWaitTimeoutSec)
 	}
 
 	cmd := fmt.Sprintf("%s -W -n %s -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -f 0x10200000",
@@ -1807,6 +1815,11 @@ func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{
 	}
 
 	output, err := d.device.Shell(cmd)
+	if err != nil && strings.Contains(output, "Starting: Intent") && !strings.Contains(output, "Error") {
+		// The intent went out and only the -W wait timed out.
+		logger.Warn("launchApp: %s did not report the launch complete within %ds — continuing", appID, launchWaitTimeoutSec)
+		return successResult(fmt.Sprintf("Launched app: %s", appID), nil)
+	}
 	if err != nil || strings.Contains(output, "Error") {
 		if strings.Contains(output, "does not exist") || strings.Contains(output, "ClassNotFoundException") {
 			dotActivity := d.addDotPrefix(activity)
