@@ -408,10 +408,12 @@ func matchesText(pattern, text, contentDesc, hintText string) bool {
 		return false
 	}
 
-	// Literal text - case-insensitive contains
-	if containsIgnoreCase(text, pattern) ||
+	// Literal text - case-insensitive contains. A dotted selector is a regex
+	// to Maestro and must match whole ("DDG." is not in "Not DDG."), so it
+	// skips this and goes to the whole-string match below.
+	if !strings.Contains(pattern, ".") && (containsIgnoreCase(text, pattern) ||
 		containsIgnoreCase(contentDesc, pattern) ||
-		containsIgnoreCase(hintText, pattern) {
+		containsIgnoreCase(hintText, pattern)) {
 		return true
 	}
 

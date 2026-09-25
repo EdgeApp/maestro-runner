@@ -128,3 +128,27 @@ func TestTapStrategies_ExactTextFirst(t *testing.T) {
 		}
 	}
 }
+
+// A dotted text selector gets only whole-string regex strategies: no
+// substring, no literal match, so "DDG." cannot land on "Not DDG.".
+func TestDottedTextStrategies(t *testing.T) {
+	all, err := buildSelectors(flow.Selector{Text: "DDG."}, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clickable, err := buildClickableOnlyStrategies(flow.Selector{Text: "DDG."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range append(all, clickable...) {
+		if strings.Contains(s.Value, "Contains(") || strings.Contains(s.Value, `\Q`) {
+			t.Errorf("dotted selector got a substring/literal strategy: %s", s.Value)
+		}
+		if !strings.Contains(s.Value, `Matches("(?s)DDG.")`) && !strings.Contains(s.Value, `Matches("(?is)DDG.")`) {
+			t.Errorf("unexpected strategy: %s", s.Value)
+		}
+	}
+	if len(clickable) != 6 {
+		t.Errorf("clickable strategies = %d, want 6", len(clickable))
+	}
+}

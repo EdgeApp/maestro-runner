@@ -18,7 +18,11 @@ func TestMatchesTextRegexMatchesWholeString(t *testing.T) {
 		// A lone dot is a wildcard too, and plain text still matches by contains.
 		{"Protections.activated!", "Protections activated!", true},
 		{"Protections.activated!", "Protections activated! Search privately", false},
-		{"Mr. Smith", "Hello Mr. Smith", true},
+		// A dotted selector matches whole, as in Maestro: no substring.
+		{"Mr. Smith", "Mr. Smith", true},
+		{"Mr. Smith", "Hello Mr. Smith", false},
+		{"DDG.", "Not DDG.\n", false},
+		{"DDG.", "DDG!", true},
 	}
 	for _, c := range cases {
 		if got := matchesText(c.pattern, c.text, "", ""); got != c.want {

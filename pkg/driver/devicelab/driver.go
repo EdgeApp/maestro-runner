@@ -1134,6 +1134,10 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 		}
 	}
 
+	if isDottedText(sel.Text) {
+		strategies = dottedTextStrategies(sel.Text, ".clickable(true)"+stateFilters)
+	}
+
 	if len(strategies) == 0 {
 		return nil, fmt.Errorf("no text selector specified")
 	}
@@ -1859,6 +1863,13 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 			)
 		}
 	}
+	if isDottedText(sel.Text) {
+		p := escapeUIAutomatorString(sel.Text)
+		textTiers = [][]string{
+			{`.textMatches("(?s)` + p + `")`, `.descriptionMatches("(?s)` + p + `")`, `.hintMatches("(?s)` + p + `")`},
+			{`.textMatches("(?is)` + p + `")`, `.descriptionMatches("(?is)` + p + `")`, `.hintMatches("(?is)` + p + `")`},
+		}
+	}
 
 	// A selector naming both must match one element carrying both. Emitting the
 	// id-only and text-only queries as separate candidates made them an OR: the
@@ -1898,6 +1909,30 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 	}
 
 	return strategies, nil
+}
+
+// isDottedText reports a text selector with a dot but no other regex syntax.
+// Maestro compiles every text selector as a regex, so its dots match any
+// character and the whole text has to match: "DDG." is not found in
+// "Not DDG.". Such selectors skip the substring fallback plain text gets.
+func isDottedText(text string) bool {
+	return text != "" && !looksLikeRegex(text) && strings.Contains(text, ".")
+}
+
+// dottedTextStrategies matches a dotted text selector whole against text,
+// description or hint: as written first, then ignoring case.
+func dottedTextStrategies(text, filters string) []LocatorStrategy {
+	p := escapeUIAutomatorString(text)
+	var out []LocatorStrategy
+	for _, flags := range []string{"(?s)", "(?is)"} {
+		for _, attr := range []string{"textMatches", "descriptionMatches", "hintMatches"} {
+			out = append(out, LocatorStrategy{
+				Strategy: uiautomator2.StrategyUIAutomator,
+				Value:    `new UiSelector().` + attr + `("` + flags + p + `")` + filters,
+			})
+		}
+	}
+	return out
 }
 
 // exactTextStrategies matches a plain text selector against the whole text,
