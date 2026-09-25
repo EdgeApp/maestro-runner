@@ -161,8 +161,7 @@ Examples:
 		},
 		&cli.IntFlag{
 			Name:    "condition-timeout",
-			Usage:   "Default timeout in ms for when:/while: condition checks (default 1000). Override per condition with `timeout:`.",
-			Value:   1000,
+			Usage:   "Fixed timeout in ms for when:/while: condition checks. Unset: as Maestro, 7s less the time since the last step (at least 1s). Override per condition with `timeout:`.",
 			EnvVars: []string{"MAESTRO_CONDITION_TIMEOUT"},
 		},
 		&cli.BoolFlag{

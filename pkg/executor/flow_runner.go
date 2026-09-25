@@ -371,6 +371,7 @@ func (fr *FlowRunner) Run() FlowResult {
 // Returns status, error message, and duration in milliseconds.
 func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, string, int64) {
 	stepStart := time.Now()
+	defer fr.script.MarkInteraction()
 
 	logger.Debug("Executing step %d: %s", idx, step.Describe())
 
@@ -1396,6 +1397,7 @@ func (fr *FlowRunner) executePasteText(step *flow.PasteTextStep) *core.CommandRe
 func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 	step = cloneForRun(step)
 	start := time.Now()
+	defer fr.script.MarkInteraction()
 	var result *core.CommandResult
 	// Describe before expansion. Top-level commands are described when the
 	// report is built, so they showed `${PASSWORD}`; a sub-flow's steps were
