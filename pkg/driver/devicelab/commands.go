@@ -30,6 +30,11 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		return d.tapOnPointWithCoords(step.Point)
 	}
 
+	// A tap straight after another waits for the first one's UI to settle:
+	// tapping duckduckgo's menu button while the menu from the previous tap
+	// was still closing did nothing.
+	d.settleAfterTap()
+
 	wasInput := d.consumeInputFlag()
 
 	// Quick check: if previous step was input and keyboard is blocking, fail fast
@@ -1604,8 +1609,8 @@ func (d *Driver) swipeWithAbsoluteCoords(startX, startY, endX, endY, durationMs 
 // Navigation Commands
 // ============================================================================
 
-// Key presses and copyTextFrom after a tap wait for the UI to settle, as
-// Maestro settles after every tap. Nothing else waits for them: a back
+// Taps, key presses and copyTextFrom after a tap wait for the UI to settle,
+// as Maestro settles after every tap. Nothing else waits for them: a back
 // pressed while the tapped sheet was still closing was swallowed by it
 // (duckduckgo's "Save Password" → back never reached the page).
 const (
