@@ -200,10 +200,12 @@ func newDriverLogMarker() string {
 // this start a new inode that no old descriptor points at, and the
 // marker, written synchronously before the launch, lets the reader
 // reject anything that is not this start's output (see driverOutput).
+// --no-hidden-api-checks lets the agent reach the accessibility node cache,
+// which it clears before reading the tree (public only from API 34).
 func deviceLabStartCommand(marker string) string {
 	return fmt.Sprintf(
 		"rm -f %[1]s; echo '%[2]s' > %[1]s; "+
-			"nohup am instrument -w %[3]s/%[4]s >> %[1]s 2>&1 &",
+			"nohup am instrument -w --no-hidden-api-checks %[3]s/%[4]s >> %[1]s 2>&1 &",
 		deviceLabDriverLog,
 		marker,
 		DeviceLabDriverTest,
