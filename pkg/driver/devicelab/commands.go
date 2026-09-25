@@ -1614,7 +1614,22 @@ func (d *Driver) swipeWithAbsoluteCoords(startX, startY, endX, endY, durationMs 
 // as Maestro settles after every tap. Nothing else waits for them: a back
 // pressed while the tapped sheet was still closing was swallowed by it
 // (duckduckgo's "Save Password" → back never reached the page).
+// waitForTreeChange polls until the screen's content differs from before,
+// or wait runs out. Returns whether it changed.
+func (d *Driver) waitForTreeChange(before uint64, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		if h, err := d.client.TreeHash(); err == nil && h != before {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	logger.Debug("[devicelab] screen unchanged %v after openLink", wait)
+	return false
+}
+
 const (
+	openLinkChangeWait      = 3 * time.Second
 	openLinkSettleTimeoutMs = 5000
 	openLinkSettleQuietMs   = 500
 	settleAfterTapTimeoutMs = 2000
@@ -2279,6 +2294,7 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 		cmd = fmt.Sprintf("am start -a android.intent.action.VIEW -d %s", quoted)
 	}
 
+	beforeHash, beforeErr := d.client.TreeHash()
 	if _, err := d.device.Shell(cmd); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to open link: %v", err))
 	}
@@ -2303,6 +2319,12 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 	// on duckduckgo's address bar copied the "Search" placeholder, then the
 	// loading URL, instead of the query the results page shows.
 	if !d.isBrowserMode() {
+		// The app may take a moment to act on the link, and until it does
+		// the screen is still and reads as settled: duckduckgo's address bar
+		// still said "Search". Wait for the screen to change first.
+		if beforeErr == nil {
+			d.waitForTreeChange(beforeHash, openLinkChangeWait)
+		}
 		if settled, err := d.client.WaitForSettle(openLinkSettleTimeoutMs, openLinkSettleQuietMs); err != nil {
 			logger.Debug("[devicelab] settle after openLink: %v", err)
 		} else if !settled {
