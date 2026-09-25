@@ -201,8 +201,10 @@ func TestKillApp_HappyPath(t *testing.T) {
 	if !res.Success {
 		t.Fatalf("killApp failed: %v", res.Error)
 	}
-	if len(shell.commands) != 1 || !strings.Contains(shell.commands[0], "am force-stop com.test.app") {
-		t.Errorf("expected force-stop command, got %v", shell.commands)
+	// killApp is a system-initiated process death (am kill), as in Maestro;
+	// force-stop belongs to stopApp.
+	if len(shell.commands) != 1 || shell.commands[0] != "am kill com.test.app" {
+		t.Errorf("expected am kill, got %v", shell.commands)
 	}
 }
 
