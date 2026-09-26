@@ -679,11 +679,15 @@ func (d *Driver) Screenshot() ([]byte, error) {
 	return d.client.Screenshot()
 }
 
-// Hierarchy captures the UI hierarchy as XML.
+// Hierarchy captures the UI hierarchy as XML: every window, as the checks
+// read it. The active window alone came back empty while duckduckgo's
+// suggestions sheet (another window) was up, so the report showed nothing.
 func (d *Driver) Hierarchy() ([]byte, error) {
-	source, err := d.client.Source()
+	source, err := d.client.Snapshot(0)
 	if err != nil {
-		return nil, err
+		if source, err = d.client.Source(); err != nil {
+			return nil, err
+		}
 	}
 	return []byte(source), nil
 }
