@@ -2609,3 +2609,30 @@ func TestParse_WaitStep(t *testing.T) {
 		}
 	})
 }
+
+// Maestro's swipe ignores keys it does not know, so `speed: fast` is not an
+// error there; here it is dropped and the swipe keeps its other fields. A
+// numeric speed still parses.
+func TestSwipeWordSpeedIgnored(t *testing.T) {
+	src := `appId: com.app
+---
+- swipe:
+    start: 50%, 70%
+    end: 50%, 20%
+    speed: fast
+- swipe:
+    direction: UP
+    speed: 80
+`
+	f, err := Parse([]byte(src), "t.yaml")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	s0 := f.Steps[0].(*SwipeStep)
+	if s0.Start != "50%, 70%" || s0.End != "50%, 20%" || s0.Speed != 0 {
+		t.Errorf("word speed: got start=%q end=%q speed=%d", s0.Start, s0.End, s0.Speed)
+	}
+	if s1 := f.Steps[1].(*SwipeStep); s1.Speed != 80 {
+		t.Errorf("numeric speed: got %d, want 80", s1.Speed)
+	}
+}
