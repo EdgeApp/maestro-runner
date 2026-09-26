@@ -954,6 +954,7 @@ func (d *Driver) findElementFast(sel flow.Selector, optional bool, stepTimeoutMs
 // lazyRetryMax times. Falls through to the standard timeout if hash has
 // changed (real "element not visible") or if no recent tap is recorded.
 func (d *Driver) findElementFastWithLazyRetry(sel flow.Selector, optional bool, stepTimeoutMs int) (*uiautomator2.Element, *core.ElementInfo, error) {
+	start := time.Now()
 	logger.Info("[devicelab] findElementFastWithLazyRetry start for %s (lastTapTime zero=%v)", sel.Describe(), d.lastTapTime.IsZero())
 	if elem, info, err := d.findElementFast(sel, optional, lazyRetryProbeMs); err == nil {
 		return elem, info, nil
@@ -966,13 +967,27 @@ func (d *Driver) findElementFastWithLazyRetry(sel flow.Selector, optional bool, 
 		}
 	}
 	logger.Info("[devicelab] findElementFastWithLazyRetry falling through to full timeout for %s", sel.Describe())
-	return d.findElementFast(sel, optional, stepTimeoutMs)
+	return d.findElementFast(sel, optional, d.remainingTimeoutMs(start, optional, stepTimeoutMs))
+}
+
+// remainingTimeoutMs is what is left of a find's timeout after the probes
+// that ran since start. The probes count against it: starting the full
+// timeout after them made a 7s when: check take 10-12s on duckduckgo's fire
+// dialog. At least 1ms is left, so the find still looks once (0 would mean
+// the default timeout).
+func (d *Driver) remainingTimeoutMs(start time.Time, optional bool, stepTimeoutMs int) int {
+	left := int(d.calculateTimeout(optional, stepTimeoutMs).Milliseconds() - time.Since(start).Milliseconds())
+	if left < 1 {
+		return 1
+	}
+	return left
 }
 
 // findElementWithLazyRetry is the same wrapper for the standard (3-call)
 // findElement path. Used by inputText, where the next step actually consumes
 // the element (vs. assertVisible which just checks visibility).
 func (d *Driver) findElementWithLazyRetry(sel flow.Selector, optional bool, stepTimeoutMs int) (*uiautomator2.Element, *core.ElementInfo, error) {
+	start := time.Now()
 	if elem, info, err := d.findElement(sel, optional, lazyRetryProbeMs); err == nil {
 		return elem, info, nil
 	}
@@ -982,7 +997,7 @@ func (d *Driver) findElementWithLazyRetry(sel flow.Selector, optional bool, step
 			return elem, info, nil
 		}
 	}
-	return d.findElement(sel, optional, stepTimeoutMs)
+	return d.findElement(sel, optional, d.remainingTimeoutMs(start, optional, stepTimeoutMs))
 }
 
 // findElementForTap finds an element for tap commands.

@@ -3,6 +3,7 @@ package devicelab
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
@@ -128,5 +129,20 @@ func TestAssertSettlesAfterTap(t *testing.T) {
 	d.Execute(&flow.HideKeyboardStep{BaseStep: flow.BaseStep{StepType: flow.StepHideKeyboard}})
 	if client.settles != 1 {
 		t.Errorf("hideKeyboard after a tap settled: %d", client.settles)
+	}
+}
+
+// The probes before a find's full wait count against its timeout.
+func TestRemainingTimeoutMs(t *testing.T) {
+	d := New(newTrackingClient(), &core.PlatformInfo{}, &mockShell{})
+	start := time.Now().Add(-2 * time.Second)
+	if got := d.remainingTimeoutMs(start, true, 7000); got < 4900 || got > 5000 {
+		t.Errorf("7s timeout 2s in: %dms left, want ~5000", got)
+	}
+	if got := d.remainingTimeoutMs(start, true, 1000); got != 1 {
+		t.Errorf("1s timeout 2s in: %dms left, want 1", got)
+	}
+	if got := d.remainingTimeoutMs(start, true, 0); got < OptionalFindTimeout-2100 || got > OptionalFindTimeout-2000 {
+		t.Errorf("default optional timeout 2s in: %dms left", got)
 	}
 }
