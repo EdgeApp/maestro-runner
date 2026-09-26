@@ -14,7 +14,7 @@ func TestIDAlternationStaysGrouped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSelectorsWithOptions: %v", err)
 	}
-	want := `resourceIdMatches(".*(?:omnibarTextInput|inputField).*")`
+	want := `resourceIdMatches("(?i).*(?:omnibarTextInput|inputField).*")`
 	for _, s := range strategies {
 		if strings.Contains(s.Value, want) {
 			return

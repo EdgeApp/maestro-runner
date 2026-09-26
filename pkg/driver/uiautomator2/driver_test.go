@@ -384,7 +384,7 @@ func TestBuildSelectorsID(t *testing.T) {
 	}
 
 	// Second strategy is the substring fallback.
-	if !strings.Contains(strategies[1].Value, `resourceIdMatches(".*(?:login_btn).*")`) {
+	if !strings.Contains(strategies[1].Value, `resourceIdMatches("(?i).*(?:login_btn).*")`) {
 		t.Errorf("expected substring fallback second, got: %s", strategies[1].Value)
 	}
 }
@@ -411,8 +411,8 @@ func TestBuildSelectorsForTapID(t *testing.T) {
 	}{
 		{0, `resourceId("login_btn").clickable(true)`, "resourceIdMatches"},
 		{1, `resourceId("login_btn")`, "resourceIdMatches"},
-		{2, `resourceIdMatches(".*(?:login_btn).*").clickable(true)`, ""},
-		{3, `resourceIdMatches(".*(?:login_btn).*")`, ""},
+		{2, `resourceIdMatches("(?i).*(?:login_btn).*").clickable(true)`, ""},
+		{3, `resourceIdMatches("(?i).*(?:login_btn).*")`, ""},
 	}
 	for _, c := range cases {
 		if !strings.Contains(strategies[c.idx].Value, c.want) {
@@ -466,7 +466,7 @@ func TestBuildSelectorsIDLiteral(t *testing.T) {
 	}
 
 	// Substring fallback (index 1) — preserve the .* wrap.
-	if !strings.Contains(strategies[1].Value, `".*(?:login_btn).*"`) {
+	if !strings.Contains(strategies[1].Value, `"(?i).*(?:login_btn).*"`) {
 		t.Errorf("literal ID substring fallback should be wrapped with .*, got: %s", strategies[1].Value)
 	}
 }
@@ -3419,7 +3419,7 @@ func TestIDAlternationStaysGrouped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSelectors: %v", err)
 	}
-	want := `resourceIdMatches(".*(?:omnibarTextInput|inputField).*")`
+	want := `resourceIdMatches("(?i).*(?:omnibarTextInput|inputField).*")`
 	found := false
 	for _, s := range strategies {
 		if strings.Contains(s.Value, want) {

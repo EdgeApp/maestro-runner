@@ -1858,12 +1858,12 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 			// the wildcards. Ungrouped, `|` split the whole pattern into
 			// ".*omnibarTextInput" or "inputField.*", and neither matched a
 			// full resource id like "com.app:id/inputField".
-			{`.resourceIdMatches(".*(?:` + escaped + `).*")`},
+			{`.resourceIdMatches("(?i).*(?:` + escaped + `).*")`},
 		}
 		// An anchored id (^x$) cannot match a full "com.app:id/x" inside
 		// wildcards; Maestro also matches the part after the last "/".
 		if core, ok := unanchored(sel.ID); ok {
-			idTiers = append(idTiers, []string{`.resourceIdMatches("(?:.*/)?(?:` + escapeUIAutomatorString(core) + `)")`})
+			idTiers = append(idTiers, []string{`.resourceIdMatches("(?i)(?:.*/)?(?:` + escapeUIAutomatorString(core) + `)")`})
 		}
 	}
 

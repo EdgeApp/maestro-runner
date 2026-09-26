@@ -234,7 +234,7 @@ func preferExactID(elems []*ParsedElement, id string) []*ParsedElement {
 	if id == "" || len(elems) < 2 {
 		return elems
 	}
-	re, err := regexp.Compile(`\A(?:` + id + `)\z`)
+	re, err := regexp.Compile(`(?i)\A(?:` + id + `)\z`)
 	if err != nil {
 		return elems
 	}
@@ -357,9 +357,11 @@ func withinTolerance(actual, expected, tolerance int) bool {
 // matchesID checks if an ID pattern matches the given resource ID.
 // Always tries regex matching first; falls back to substring contains on compile error.
 func matchesID(pattern, id string) bool {
-	re, err := regexp.Compile(pattern)
+	// Maestro compiles id selectors with IGNORE_CASE: `id: Flatlist` finds
+	// RNTester's "FlatList" item.
+	re, err := regexp.Compile("(?i)" + pattern)
 	if err != nil {
-		return strings.Contains(id, pattern)
+		return strings.Contains(strings.ToLower(id), strings.ToLower(pattern))
 	}
 	return re.MatchString(id)
 }

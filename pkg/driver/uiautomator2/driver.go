@@ -1193,7 +1193,7 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 			// the wildcards. Ungrouped, `|` split the whole pattern into
 			// ".*omnibarTextInput" or "inputField.*", and neither matched a
 			// full resource id like "com.app:id/inputField".
-			{`.resourceIdMatches(".*(?:` + escaped + `).*")`},
+			{`.resourceIdMatches("(?i).*(?:` + escaped + `).*")`},
 		}
 	}
 

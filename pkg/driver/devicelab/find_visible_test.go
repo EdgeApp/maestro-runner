@@ -1,6 +1,7 @@
 package devicelab
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
@@ -61,10 +62,31 @@ func TestAnchoredID(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := strategies[len(strategies)-1].Value
-	if want := `new UiSelector().resourceIdMatches("(?:.*/)?(?:auth\.login)")`; last != want {
+	if want := `new UiSelector().resourceIdMatches("(?i)(?:.*/)?(?:auth\.login)")`; last != want {
 		t.Errorf("last strategy = %s, want %s", last, want)
 	}
 	if core, ok := unanchored(`price\$`); ok || core != `price\$` {
 		t.Errorf("escaped $ is not an anchor: %q %v", core, ok)
+	}
+}
+
+// An id matches regardless of case, as Maestro compiles ids with IGNORE_CASE:
+// RNTester's flow asks for `id: Flatlist` and the item is "FlatList".
+func TestIDIgnoresCase(t *testing.T) {
+	if !matchesID("Flatlist", "FlatList") {
+		t.Error("page source: id should match ignoring case")
+	}
+	strategies, err := buildSelectors(flow.Selector{ID: "Flatlist"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range strategies {
+		if strings.Contains(s.Value, `resourceIdMatches("(?i).*(?:Flatlist).*")`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no case-insensitive id strategy in %v", strategies)
 	}
 }
