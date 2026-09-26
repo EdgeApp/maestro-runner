@@ -1903,8 +1903,8 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
 			pattern := escapeUIAutomatorString(sel.Text)
 			textTiers = append(textTiers,
-				[]string{`.textMatches("(?s)` + pattern + `")`, `.descriptionMatches("(?s)` + pattern + `")`},
-				[]string{`.textMatches("(?is)` + pattern + `")`, `.descriptionMatches("(?is)` + pattern + `")`},
+				[]string{`.textMatches("(?s)` + pattern + `")`, `.descriptionMatches("(?s)` + pattern + `")`, `.hintMatches("(?s)` + pattern + `")`},
+				[]string{`.textMatches("(?is)` + pattern + `")`, `.descriptionMatches("(?is)` + pattern + `")`, `.hintMatches("(?is)` + pattern + `")`},
 			)
 		}
 	}
