@@ -117,8 +117,9 @@ func (m *webViewManager) connectViaUnixSocket(cdpInfo *core.CDPInfo, cdpType str
 	connectCtx, connectCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer connectCancel()
 
+	dialer := &unixDialer{socketPath: socketPath}
 	ws := &cdp.WebSocket{
-		Dialer: &unixDialer{socketPath: socketPath},
+		Dialer: dialer,
 	}
 	logger.Info("[cdp:5-websocket] connecting CDP WebSocket via unix socket: %s", socketPath)
 	if err := ws.Connect(connectCtx, "ws://localhost/devtools/browser", nil); err != nil {
@@ -127,6 +128,7 @@ func (m *webViewManager) connectViaUnixSocket(cdpInfo *core.CDPInfo, cdpType str
 		os.Remove(socketPath)
 		return fmt.Errorf("failed to connect CDP WebSocket: %w", err)
 	}
+	dialer.clearDeadline()
 	logger.Info("[cdp:5-websocket] CDP WebSocket connected successfully")
 
 	// Step 6: Rod browser client + page acquisition (bounded by timeout)
@@ -267,10 +269,12 @@ func (m *webViewManager) evalPage() (*rod.Page, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ws := &cdp.WebSocket{Dialer: &unixDialer{socketPath: socketPath}}
+	evalDialer := &unixDialer{socketPath: socketPath}
+	ws := &cdp.WebSocket{Dialer: evalDialer}
 	if err := ws.Connect(ctx, "ws://localhost/devtools/browser", nil); err != nil {
 		return nil, fmt.Errorf("eval connection: %w", err)
 	}
+	evalDialer.clearDeadline()
 	browser := rod.New().Client(cdp.New().Start(ws)).NoDefaultDevice()
 	if err := browser.Connect(); err != nil {
 		return nil, fmt.Errorf("eval browser connect: %w", err)
@@ -925,8 +929,9 @@ func (m *webViewManager) connectBrowserViaHTTP(cdpInfo *core.CDPInfo, cdpType st
 	defer connectCancel()
 
 	pageWSPath := fmt.Sprintf("ws://localhost/devtools/page/%s", pageTarget.ID)
+	pageDialer := &unixDialer{socketPath: socketPath}
 	ws := &cdp.WebSocket{
-		Dialer: &unixDialer{socketPath: socketPath},
+		Dialer: pageDialer,
 	}
 	logger.Info("[cdp:6-websocket] connecting CDP WebSocket to page: %s", pageWSPath)
 	if err := ws.Connect(connectCtx, pageWSPath, nil); err != nil {
@@ -935,6 +940,7 @@ func (m *webViewManager) connectBrowserViaHTTP(cdpInfo *core.CDPInfo, cdpType st
 		os.Remove(socketPath)
 		return fmt.Errorf("failed to connect page WebSocket: %w", err)
 	}
+	pageDialer.clearDeadline()
 	logger.Info("[cdp:6-websocket] page WebSocket connected successfully")
 
 	// Step 7: Create Rod browser+page via wrapped CDP client
@@ -1726,11 +1732,34 @@ func cssEscapeID(s string) string {
 // unixDialer implements cdp.Dialer for Unix socket connections.
 type unixDialer struct {
 	socketPath string
+	conn       net.Conn // the last connection dialed, for clearDeadline
 }
 
+// DialContext dials the forwarded socket and puts ctx's deadline on the
+// connection itself. The context bounds only the dial, which to a local adb
+// forward succeeds at once; the WebSocket handshake then read with no
+// deadline, and when the device side never answered, CDP connect blocked for
+// 11 minutes in the middle of a scrollUntilVisible (RNTester's
+// flatlist-viewability). clearDeadline lifts it once the socket is up.
 func (d *unixDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, "unix", d.socketPath)
+	conn, err := dialer.DialContext(ctx, "unix", d.socketPath)
+	if err != nil {
+		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	d.conn = conn
+	return conn, nil
+}
+
+// clearDeadline removes the handshake deadline from the connection, so a
+// long-lived CDP session is not cut off by it.
+func (d *unixDialer) clearDeadline() {
+	if d.conn != nil {
+		_ = d.conn.SetDeadline(time.Time{})
+	}
 }
 
 // webViewNetworkTracker tracks in-flight network requests via CDP Network domain events.
