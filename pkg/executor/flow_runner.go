@@ -31,6 +31,9 @@ type FlowRunner struct {
 	stepsPassed  int
 	stepsFailed  int
 	stepsSkipped int
+
+	// Set when a runFlow's when: skipped it; markInteraction consumes it
+	runFlowSkipped bool
 	// Sub-command tracking for compound steps (runFlow, repeat, retry)
 	subCommands []report.Command
 	// nestedArtifactSeq numbers failure artifacts captured for nested steps
@@ -377,7 +380,7 @@ func (fr *FlowRunner) Run() FlowResult {
 // Returns status, error message, and duration in milliseconds.
 func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, string, int64) {
 	stepStart := time.Now()
-	defer fr.script.MarkInteraction()
+	defer fr.markInteraction(step)
 
 	logger.Debug("Executing step %d: %s", idx, step.Describe())
 
@@ -1157,6 +1160,7 @@ func (fr *FlowRunner) executeRunFlow(step *flow.RunFlowStep) *core.CommandResult
 			if step.ElseFile != "" || len(step.ElseSteps) > 0 {
 				return fr.executeRunFlowElse(step)
 			}
+			fr.runFlowSkipped = true
 			return &core.CommandResult{
 				Success: true,
 				Message: "Skipped (when condition not met)",
@@ -1403,7 +1407,7 @@ func (fr *FlowRunner) executePasteText(step *flow.PasteTextStep) *core.CommandRe
 func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 	step = cloneForRun(step)
 	start := time.Now()
-	defer fr.script.MarkInteraction()
+	defer fr.markInteraction(step)
 	var result *core.CommandResult
 	// Describe before expansion. Top-level commands are described when the
 	// report is built, so they showed `${PASSWORD}`; a sub-flow's steps were
@@ -1850,4 +1854,26 @@ func (fr *FlowRunner) executeWait(step *flow.WaitStep) *core.CommandResult {
 			Error:   fr.ctx.Err(),
 		}
 	}
+}
+
+// markInteraction restarts the clock a when: check's budget is measured from,
+// after a step that may have changed the app, as Maestro does. Asserts,
+// waits, screenshots, variables, retry/repeat themselves (their steps count)
+// and a runFlow whose condition skipped it leave the clock alone: marking
+// them gave back-to-back checks for absent dialogs a fresh 7s each.
+func (fr *FlowRunner) markInteraction(step flow.Step) {
+	if _, ok := step.(*flow.RunFlowStep); ok && fr.runFlowSkipped {
+		fr.runFlowSkipped = false
+		return
+	}
+	switch step.(type) {
+	case *flow.AssertVisibleStep, *flow.AssertNotVisibleStep, *flow.AssertTrueStep,
+		*flow.AssertConditionStep, *flow.AssertWithAIStep, *flow.AssertNoDefectsWithAIStep,
+		*flow.ExtractTextWithAIStep, *flow.AssertDarkModeStep, *flow.AssertLightModeStep,
+		*flow.AssertNoJSErrorsStep, *flow.WaitUntilStep, *flow.WaitForDownloadStep,
+		*flow.WaitForRequestStep, *flow.TakeScreenshotStep, *flow.StartRecordingStep,
+		*flow.StopRecordingStep, *flow.DefineVariablesStep, *flow.RetryStep, *flow.RepeatStep:
+		return
+	}
+	fr.script.MarkInteraction()
 }
