@@ -24,9 +24,17 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		return d.tapOnPointWithCoords(step.Point)
 	}
 
-	// Handle keyboard key names — iOS keyboard buttons aren't reliably findable via WDA
-	if step.Selector.Text != "" {
-		if keyChar := iosKeyboardKey(step.Selector.Text); keyChar != "" {
+	// A keyboard key name (Return, Delete, Space, …) is also the label of
+	// ordinary buttons: an alert's Delete, a form's Return. Tap such an
+	// element when one is on screen, and send the key only when none is and
+	// a keyboard is up. Sending the key first made tapOn: Delete a backspace
+	// that dismissed nothing and still reported success (#179).
+	var info *core.ElementInfo
+	var err error
+	if keyChar := iosKeyboardKey(step.Selector.Text); keyChar != "" && step.Selector.ID == "" {
+		if found, findErr := d.findElementForTap(step.Selector, true, keyboardKeyProbeMs); findErr == nil && found != nil {
+			info = found
+		} else if shown, _ := d.keyboardVisible(); shown {
 			if err := d.client.SendKeys(keyChar, 0); err != nil {
 				return errorResult(err, fmt.Sprintf("Failed to send key: %s", step.Selector.Text))
 			}
@@ -34,7 +42,9 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		}
 	}
 
-	info, err := d.findElementForTap(step.Selector, step.Optional, step.TimeoutMs)
+	if info == nil {
+		info, err = d.findElementForTap(step.Selector, step.Optional, step.TimeoutMs)
+	}
 	if err != nil {
 		if step.Optional {
 			return successResult("Optional element not found, skipping tap", nil)
@@ -77,6 +87,7 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 	// then coordinate tap as fallback. For text fields, verify focus after each attempt
 	// because ElementClick can return success without actually focusing the field.
 	tapped := false
+	clickFailed := false
 	if info.ID != "" {
 		if err := d.client.ElementClick(info.ID); err == nil {
 			tapped = true
@@ -86,18 +97,60 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 					tapped = false // No focus — retry with coordinate tap
 				}
 			}
+		} else {
+			clickFailed = true
 		}
 	}
 
 	if !tapped {
-		x := float64(info.Bounds.X + info.Bounds.Width/2)
-		y := float64(info.Bounds.Y + info.Bounds.Height/2)
+		// A failed click usually means the element went stale: during a push
+		// the lookup can resolve to the outgoing screen's copy, which is gone
+		// by the time of the click. Its old bounds point at that screen, off
+		// the edge (x = -25), so look the element up again before tapping.
+		if clickFailed {
+			if fresh, findErr := d.findElementForTap(step.Selector, true, staleRefindMs); findErr == nil && fresh != nil {
+				info = fresh
+			}
+		}
+		x, y, onScreen := d.tapPoint(info.Bounds)
+		if !onScreen {
+			return errorResult(fmt.Errorf("element is not on screen: bounds (%d,%d %dx%d)",
+				info.Bounds.X, info.Bounds.Y, info.Bounds.Width, info.Bounds.Height),
+				fmt.Sprintf("Element not on screen: %s", selectorDesc(step.Selector)))
+		}
 		if err := d.client.Tap(x, y); err != nil {
 			return errorResult(err, "Tap failed")
 		}
 	}
 
 	return successResult("Tapped element", info)
+}
+
+const (
+	// keyboardKeyProbeMs gives a key-named tapOn one look for an element
+	// with that label (an alert's Delete is already up when the step runs)
+	// before treating the name as a keyboard key.
+	keyboardKeyProbeMs = 1
+	// staleRefindMs bounds the second lookup after a failed element click.
+	staleRefindMs = 2000
+)
+
+// tapPoint is the centre of the part of b that is on screen, so a tap never
+// goes to a point off the display: a coordinate tap WDA accepts anywhere,
+// and an element partly outside the viewport, or taller than it, has its
+// centre outside what can be touched. onScreen is false when no part of b is
+// visible. Without a screen size the plain centre is used.
+func (d *Driver) tapPoint(b core.Bounds) (x, y float64, onScreen bool) {
+	sw, sh, err := d.screenSize()
+	if err != nil {
+		return float64(b.X + b.Width/2), float64(b.Y + b.Height/2), true
+	}
+	left, top := max(b.X, 0), max(b.Y, 0)
+	right, bottom := min(b.X+b.Width, sw), min(b.Y+b.Height, sh)
+	if right <= left || bottom <= top {
+		return 0, 0, false
+	}
+	return float64(left+right) / 2, float64(top+bottom) / 2, true
 }
 
 // dragAndDrop long-presses the from-target, then drags it onto the to-target.

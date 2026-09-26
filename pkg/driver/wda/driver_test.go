@@ -4300,7 +4300,13 @@ func TestTapOnWithID(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(r.URL.Path, "/elements") || (strings.Contains(r.URL.Path, "/element") && r.Method == "POST") {
+		if strings.HasSuffix(r.URL.Path, "/elements") {
+			jsonResponse(w, map[string]interface{}{
+				"value": []map[string]interface{}{{"ELEMENT": "elem1"}},
+			})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/element") && r.Method == "POST" {
 			jsonResponse(w, map[string]interface{}{
 				"value": map[string]interface{}{"ELEMENT": "elem1"},
 			})
@@ -4383,6 +4389,10 @@ func TestTapOnOptionalNotFound(t *testing.T) {
 func TestTapOnWithElementIDClickFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/elements") {
+			jsonResponse(w, map[string]interface{}{"value": []map[string]interface{}{{"ELEMENT": "elem1"}}})
+			return
+		}
 		if strings.Contains(r.URL.Path, "/element") && strings.Contains(r.URL.Path, "/displayed") {
 			jsonResponse(w, map[string]interface{}{"value": true})
 			return

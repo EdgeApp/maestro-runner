@@ -842,12 +842,12 @@ func (d *Driver) findElementByWDA(sel flow.Selector) (*core.ElementInfo, error) 
 			// CONTAINS fallback preserves the lenient Maestro-compat behavior
 			// for callers that rely on partial-id matching.
 			exact := fmt.Sprintf("**/XCUIElementTypeAny[`name == '%s'%s`]", sel.ID, stateFilter)
-			if elemID, err := d.client.FindElement("class chain", exact); err == nil && elemID != "" {
-				return d.getElementInfo(elemID)
+			if info, err, found := d.findByIDQuery(exact); found {
+				return info, err
 			}
 			contains := fmt.Sprintf("**/XCUIElementTypeAny[`name CONTAINS '%s'%s`]", sel.ID, stateFilter)
-			if elemID, err := d.client.FindElement("class chain", contains); err == nil && elemID != "" {
-				return d.getElementInfo(elemID)
+			if info, err, found := d.findByIDQuery(contains); found {
+				return info, err
 			}
 		}
 	}
@@ -947,6 +947,60 @@ func (d *Driver) getElementInfo(elemID string) (*core.ElementInfo, error) {
 	}
 
 	return info, nil
+}
+
+// findByIDQuery resolves a class-chain id query, preferring an on-screen
+// element when several match (onScreenOf). found is false when nothing
+// matched. A WDA that cannot list elements gets the single-element query.
+func (d *Driver) findByIDQuery(query string) (*core.ElementInfo, error, bool) { //nolint:revive,staticcheck // found last reads naturally at call sites
+	ids, err := d.client.FindElements("class chain", query)
+	if err != nil {
+		elemID, ferr := d.client.FindElement("class chain", query)
+		if ferr != nil || elemID == "" {
+			return nil, nil, false
+		}
+		info, ierr := d.getElementInfo(elemID)
+		return info, ierr, true
+	}
+	if len(ids) == 0 {
+		return nil, nil, false
+	}
+	info, ierr := d.onScreenOf(ids)
+	return info, ierr, true
+}
+
+// maxIDCandidates caps how many same-id elements are inspected; each costs
+// the element calls in getElementInfo.
+const maxIDCandidates = 5
+
+// onScreenOf picks among elements sharing an id: the first XCUITest reports
+// displayed, else the first the viewport check in getElementInfo accepts.
+// While a push animates, the outgoing screen and the incoming one both hold
+// an element with the same id, and the outgoing copy comes first in tree
+// order; taking it tapped the screen being left (#179).
+func (d *Driver) onScreenOf(ids []string) (*core.ElementInfo, error) {
+	var fallback *core.ElementInfo
+	var lastErr error
+	for i, id := range ids {
+		if i == maxIDCandidates {
+			break
+		}
+		info, err := d.getElementInfo(id)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if info.Visible {
+			return info, nil
+		}
+		if fallback == nil {
+			fallback = info
+		}
+	}
+	if fallback != nil {
+		return fallback, nil
+	}
+	return nil, lastErr
 }
 
 // findElementRelativeWithContext handles relative selectors with context-based timeout.
