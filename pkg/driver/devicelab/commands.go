@@ -1628,22 +1628,36 @@ func (d *Driver) waitForTreeChange(before uint64, wait time.Duration) bool {
 	return false
 }
 
+// Settle limits. The agent reads the tree back to back and calls it settled
+// once it has stayed the same for settleQuietMs. waitForIdleTimeout: 0 skips
+// settling; its value does not cap it (the default is 200ms, far below what a
+// screen change takes). Maestro accepts
+// two equal consecutive reads, and so fails where an app pauses before its
+// next dialog: duckduckgo shows "Close Autofill Dialog" a moment after "Save
+// Password", and a 200ms window pressed Back before it appeared.
 const (
 	openLinkChangeWait      = 3 * time.Second
 	openLinkSettleTimeoutMs = 5000
-	openLinkSettleQuietMs   = 500
 	settleAfterTapTimeoutMs = 2000
-	settleAfterTapQuietMs   = 500
+	settleQuietMs           = 500
 )
 
-func (d *Driver) settleAfterTap() {
-	if !d.lastStepWasTap {
+// settle waits for the screen to stop changing, for at most maxMs; it is
+// off when waitForIdleTimeout is 0.
+func (d *Driver) settle(maxMs int, what string) {
+	if d.idleTimeoutSet && d.idleTimeoutMs == 0 {
 		return
 	}
-	if settled, err := d.client.WaitForSettle(settleAfterTapTimeoutMs, settleAfterTapQuietMs); err != nil {
-		logger.Debug("[devicelab] settle after tap: %v", err)
+	if settled, err := d.client.WaitForSettle(maxMs, settleQuietMs); err != nil {
+		logger.Debug("[devicelab] settle after %s: %v", what, err)
 	} else if !settled {
-		logger.Debug("[devicelab] settle after tap: still changing after %dms", settleAfterTapTimeoutMs)
+		logger.Debug("[devicelab] settle after %s: still changing after %dms", what, maxMs)
+	}
+}
+
+func (d *Driver) settleAfterTap() {
+	if d.lastStepWasTap {
+		d.settle(settleAfterTapTimeoutMs, "tap")
 	}
 }
 
@@ -1674,11 +1688,7 @@ func (d *Driver) pressKey(step *flow.PressKeyStep) *core.CommandResult {
 	// duckduckgo's native input widget, and the tap it guarded then found
 	// nothing once the page had loaded.
 	if keyCode == uiautomator2.KeyCodeEnter && !d.isBrowserMode() {
-		if settled, err := d.client.WaitForSettle(openLinkSettleTimeoutMs, openLinkSettleQuietMs); err != nil {
-			logger.Debug("[devicelab] settle after enter: %v", err)
-		} else if !settled {
-			logger.Debug("[devicelab] settle after enter: still changing after %dms", openLinkSettleTimeoutMs)
-		}
+		d.settle(openLinkSettleTimeoutMs, "enter")
 	}
 
 	return successResult(fmt.Sprintf("Pressed key: %s", key), nil)
@@ -2359,11 +2369,7 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 		if beforeErr == nil {
 			d.waitForTreeChange(beforeHash, openLinkChangeWait)
 		}
-		if settled, err := d.client.WaitForSettle(openLinkSettleTimeoutMs, openLinkSettleQuietMs); err != nil {
-			logger.Debug("[devicelab] settle after openLink: %v", err)
-		} else if !settled {
-			logger.Debug("[devicelab] settle after openLink: still changing after %dms", openLinkSettleTimeoutMs)
-		}
+		d.settle(openLinkSettleTimeoutMs, "openLink")
 	}
 
 	return successResult(fmt.Sprintf("Opened link: %s", link), nil)

@@ -1633,12 +1633,14 @@ type richClient struct {
 	settleQuiet  bool
 	settleErr    error
 	applySettErr error
+	settleCalls  [][2]int
 }
 
 func (r *richClient) Source() (string, error)         { return r.source, r.sourceErr }
 func (r *richClient) GetOrientation() (string, error) { return r.orientation, nil }
 func (r *richClient) GetClipboard() (string, error)   { return r.clipboard, nil }
 func (r *richClient) WaitForSettle(timeoutMs, quietMs int) (bool, error) {
+	r.settleCalls = append(r.settleCalls, [2]int{timeoutMs, quietMs})
 	return r.settleQuiet, r.settleErr
 }
 func (r *richClient) SetAppiumSettings(settings map[string]interface{}) error {
@@ -1776,6 +1778,33 @@ func TestDriver_WaitForSettle(t *testing.T) {
 	client.settleErr = errors.New("nope")
 	if _, err := d.WaitForSettle(1000, 500); err == nil {
 		t.Error("WaitForSettle should propagate client error")
+	}
+}
+
+// A settle keeps its own limit whatever waitForIdleTimeout is (its 200ms
+// default once cut every settle short), and waitForIdleTimeout 0 skips it.
+func TestSettle_IdleTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		idle  int // -1 = never set
+		calls [][2]int
+	}{
+		{"unset", -1, [][2]int{{settleAfterTapTimeoutMs, settleQuietMs}}},
+		{"default 200", 200, [][2]int{{settleAfterTapTimeoutMs, settleQuietMs}}},
+		{"zero skips", 0, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &richClient{trackingClient: newTrackingClient(), settleQuiet: true}
+			d := New(client, &core.PlatformInfo{}, &mockShell{})
+			if tc.idle >= 0 {
+				_ = d.SetWaitForIdleTimeout(tc.idle)
+			}
+			d.lastStepWasTap = true
+			d.settleAfterTap()
+			if len(client.settleCalls) != len(tc.calls) || (len(tc.calls) > 0 && client.settleCalls[0] != tc.calls[0]) {
+				t.Errorf("settle calls = %v, want %v", client.settleCalls, tc.calls)
+			}
+		})
 	}
 }
 

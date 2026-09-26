@@ -122,6 +122,10 @@ type Driver struct {
 	// Set after a successful tap; back/pressKey settle first when it is set
 	lastStepWasTap bool
 
+	// waitForIdleTimeout as last set; 0 turns the settles off
+	idleTimeoutMs  int
+	idleTimeoutSet bool
+
 	// Text of the last WebView label a tap targeted, used to find and drive the
 	// matching cross-origin iframe input over CDP when the following inputText
 	// can't reach it natively (Shopify checkout's hosted card fields). Persists
@@ -499,6 +503,7 @@ func (d *Driver) SetWaitForIdleTimeout(ms int) error {
 	if ms < 0 {
 		ms = 0
 	}
+	d.idleTimeoutMs, d.idleTimeoutSet = ms, true
 	return d.client.SetAppiumSettings(map[string]interface{}{
 		"waitForIdleTimeout": ms,
 	})
