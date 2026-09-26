@@ -38,6 +38,7 @@ type DeviceLabClient interface {
 	// FindAndClickChecked additionally hit-tests the tap point when hitTest is
 	// set, returning what covered it when a tap is refused.
 	FindAndClickChecked(strategy, selector string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, error)
+	FindFirstAndClickChecked(strategiesAndSelectors []string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, int, error)
 	ActiveElement() (*uiautomator2.Element, error)
 
 	// Timeouts
@@ -122,6 +123,9 @@ type Driver struct {
 
 	// Set after a successful tap; back/pressKey settle first when it is set
 	lastStepWasTap bool
+
+	// Set when the agent has no Gesture.findFirstAndClick (older build)
+	noFindFirstAndClick bool
 
 	// waitForIdleTimeout as last set; 0 turns the settles off
 	idleTimeoutMs  int

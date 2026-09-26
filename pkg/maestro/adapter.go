@@ -230,6 +230,41 @@ func (a *Adapter) FindAndClickChecked(strategy, selector string, screenW, screen
 	return elem, clicked, result.BlockedBy, nil
 }
 
+// FindFirstAndClickChecked is FindAndClickChecked for the first of several
+// forms that matches: strategiesAndSelectors alternates strategy, selector.
+// The agent tries them in order on one read of the screen and returns which
+// one it tapped.
+func (a *Adapter) FindFirstAndClickChecked(strategiesAndSelectors []string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, int, error) {
+	if len(strategiesAndSelectors) == 0 || len(strategiesAndSelectors)%2 != 0 {
+		return nil, false, "", -1, fmt.Errorf("findFirstAndClick: pairs must alternate (strategy, selector)")
+	}
+	payload := make([]map[string]string, len(strategiesAndSelectors)/2)
+	for i := range payload {
+		payload[i] = map[string]string{
+			"strategy": strategiesAndSelectors[i*2],
+			"selector": strategiesAndSelectors[i*2+1],
+		}
+	}
+	params := map[string]interface{}{"strategies": payload}
+	if screenW > 0 && screenH > 0 {
+		params["screenWidth"] = screenW
+		params["screenHeight"] = screenH
+	}
+	if hitTest {
+		params["hitTest"] = true
+	}
+	resp, err := a.client.Call("Gesture.findFirstAndClick", params)
+	if err != nil {
+		return nil, false, "", -1, err
+	}
+	var result ElementResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, false, "", -1, fmt.Errorf("parse findFirstAndClick result: %w", err)
+	}
+	clicked := result.Clicked == nil || *result.Clicked
+	return a.newElement(result), clicked, result.BlockedBy, result.MatchedIndex, nil
+}
+
 // --- Timeouts ---
 
 // SetImplicitWait sets the implicit wait timeout for element finding.

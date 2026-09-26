@@ -37,6 +37,12 @@ func (m *mockDeviceLabClient) FindAndClick(strategy, selector string) (*uiautoma
 
 // findClickGuardW/H record the screen size the driver passed, and
 // findClickClicked is what the fake agent reports back (#162).
+// FindFirstAndClickChecked reports an agent without the batched call, so the
+// driver falls back to FindAndClickChecked per form, which these tests script.
+func (m *mockDeviceLabClient) FindFirstAndClickChecked([]string, int, int, bool) (*uiautomator2.Element, bool, string, int, error) {
+	return nil, false, "", -1, errors.New("unknown_method: Unknown method: Gesture.findFirstAndClick")
+}
+
 func (m *mockDeviceLabClient) FindAndClickChecked(strategy, selector string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, error) {
 	elem, clicked, err := m.FindAndClickGuarded(strategy, selector, screenW, screenH)
 	m.findClickHitTest = hitTest

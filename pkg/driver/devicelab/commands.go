@@ -141,96 +141,47 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 					return d.tapOnBrowser(step)
 				}
 
-				for _, s := range strategies {
-					// Capture the pre-tap tree hash so a later failing
-					// assertion can detect "tap had no effect" and retry.
-					d.recordTap(step.Selector)
+				// Capture the pre-tap tree hash so a later failing assertion
+				// can detect "tap had no effect" and retry.
+				d.recordTap(step.Selector)
 
-					// Hand the agent the screen size so it can reject an
-					// untappable rect BEFORE injecting the tap. Previously the
-					// check below ran on a tap that had already landed: a
-					// clipped rect's centre sits outside the element, and with
-					// a bottom tab bar that centre is a tab, so the "rejected"
-					// tap navigated and desynced the flow (#162).
+				// One call tries every form on one read of the screen; an
+				// agent without it gets one call per form.
+				if !d.noFindFirstAndClick {
+					pairs := make([]string, 0, 2*len(strategies))
+					for _, s := range strategies {
+						pairs = append(pairs, s.Strategy, s.Value)
+					}
+					elem, clicked, blockedBy, idx, err := d.client.FindFirstAndClickChecked(pairs, guardW, guardH, hitTest)
+					if err == nil && idx >= 0 && idx < len(strategies) {
+						if res, retry := d.tapHit(step, strategies[idx], elem, clicked, blockedBy, guardW, guardH); res != nil {
+							return res
+						} else {
+							lastErr = retry
+						}
+						continue
+					}
+					if err != nil && strings.Contains(err.Error(), "Unknown method") {
+						d.noFindFirstAndClick = true
+					} else {
+						if err != nil {
+							lastErr = err
+						}
+						time.Sleep(snapshotPollGap)
+						continue
+					}
+				}
+
+				for _, s := range strategies {
+					d.recordTap(step.Selector)
 					elem, clicked, blockedBy, err := d.client.FindAndClickChecked(s.Strategy, s.Value, guardW, guardH, hitTest)
 					if err == nil {
-						info := &core.ElementInfo{
-							Visible: true,
-							Enabled: true,
+						if res, retry := d.tapHit(step, s, elem, clicked, blockedBy, guardW, guardH); res != nil {
+							return res
+						} else {
+							lastErr = retry
 						}
-						if t, err := elem.Text(); err == nil {
-							info.Text = t
-						}
-						rectOK := false
-						if rect, err := elem.Rect(); err == nil {
-							info.Bounds = core.Bounds{X: rect.X, Y: rect.Y, Width: rect.Width, Height: rect.Height}
-							rectOK = true
-						}
-						logger.Info("[devicelab] FindAndClick hit for %s via %s=%s: bounds=[%d,%d][%d,%d] (w=%d h=%d) center=(%d,%d)",
-							step.Selector.Describe(), s.Strategy, s.Value,
-							info.Bounds.X, info.Bounds.Y,
-							info.Bounds.X+info.Bounds.Width, info.Bounds.Y+info.Bounds.Height,
-							info.Bounds.Width, info.Bounds.Height,
-							info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2)
-
-						// #94: reject a tap whose rect is malformed (non-positive
-						// width/height) or whose centre lies off-screen, and keep
-						// polling. The agent's id-find path applies no on-screen
-						// filter, so a just-opened bottom sheet's first laid-out
-						// frame yields a clipped rect (top>bottom) and FindAndClick
-						// injects the tap off-screen — a no-op that leaves the flow
-						// desynced. A settled frame a moment later taps the real
-						// target. (Mirrors the assert-side viewport check from #39.)
-						// The agent declined to tap. Nothing was injected,
-						// so just keep polling for a settled frame.
-						if !clicked {
-							// blockedBy is set when the hit test found something
-							// over the point; otherwise the rect itself was bad.
-							if blockedBy != "" {
-								logger.Info("[devicelab] tap skipped before injection for %s: point covered by %s — re-polling",
-									step.Selector.Describe(), blockedBy)
-								lastErr = fmt.Errorf("tap point is covered by %s", blockedBy)
-							} else {
-								logger.Info("[devicelab] tap skipped before injection (untappable rect) for %s: w=%d h=%d center=(%d,%d) screen=%dx%d — re-polling",
-									step.Selector.Describe(), info.Bounds.Width, info.Bounds.Height,
-									info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, guardW, guardH)
-								lastErr = fmt.Errorf("element rect not tappable (w=%d h=%d center=(%d,%d) screen=%dx%d)",
-									info.Bounds.Width, info.Bounds.Height,
-									info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, guardW, guardH)
-							}
-							time.Sleep(50 * time.Millisecond)
-							break
-						}
-
-						// Fallback for an agent predating the guard above: it
-						// has already clicked, so this only stops a second tap.
-						if rectOK {
-							// Validate against the FULL physical display (same coordinate
-							// space as info.Bounds, which come from the accessibility
-							// hierarchy). screenSize() can report the USABLE height (minus
-							// the status bar), which wrongly condemns on-screen bottom
-							// buttons/FABs whose centre sits in the bottom band.
-							if sw, sh, serr := d.tappableScreenSize(); serr == nil && !boundsTappable(info.Bounds, sw, sh) {
-								logger.Info("[devicelab] tap rejected (off-screen/malformed rect) for %s: w=%d h=%d center=(%d,%d) screen=%dx%d — re-polling",
-									step.Selector.Describe(), info.Bounds.Width, info.Bounds.Height,
-									info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, sw, sh)
-								lastErr = fmt.Errorf("element rect not tappable (w=%d h=%d center=(%d,%d) screen=%dx%d)",
-									info.Bounds.Width, info.Bounds.Height,
-									info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, sw, sh)
-								time.Sleep(50 * time.Millisecond)
-								break
-							}
-						}
-
-						// Post-tap verification candidates (all wired but
-						// NOT called — empirically none reliably distinguish
-						// "tap had effect" from "tap fired ripple only" on
-						// the React Navigation showcase app):
-						//   d.tapHadEffectViaWindowUpdate("")  // Maestro's isWindowUpdating
-						//   d.tapHadEffect()                   // element-presence check
-						// Both produce false positives (ripples count) and
-						// false negatives (buttons persist across screens).
-						return successResult("Tapped on element", info)
+						break
 					}
 					lastErr = err
 				}
@@ -300,6 +251,90 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 	}
 
 	return successResult("Tapped on element", info)
+}
+
+// tapHit handles a find-and-click that found an element for step via s. It
+// returns the step's result when the tap went out, or the reason to poll
+// again when the agent declined to tap (covered point, untappable rect).
+func (d *Driver) tapHit(step *flow.TapOnStep, s LocatorStrategy, elem *uiautomator2.Element, clicked bool, blockedBy string, guardW, guardH int) (*core.CommandResult, error) {
+	var lastErr error
+	info := &core.ElementInfo{
+		Visible: true,
+		Enabled: true,
+	}
+	if t, err := elem.Text(); err == nil {
+		info.Text = t
+	}
+	rectOK := false
+	if rect, err := elem.Rect(); err == nil {
+		info.Bounds = core.Bounds{X: rect.X, Y: rect.Y, Width: rect.Width, Height: rect.Height}
+		rectOK = true
+	}
+	logger.Info("[devicelab] FindAndClick hit for %s via %s=%s: bounds=[%d,%d][%d,%d] (w=%d h=%d) center=(%d,%d)",
+		step.Selector.Describe(), s.Strategy, s.Value,
+		info.Bounds.X, info.Bounds.Y,
+		info.Bounds.X+info.Bounds.Width, info.Bounds.Y+info.Bounds.Height,
+		info.Bounds.Width, info.Bounds.Height,
+		info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2)
+
+	// #94: reject a tap whose rect is malformed (non-positive
+	// width/height) or whose centre lies off-screen, and keep
+	// polling. The agent's id-find path applies no on-screen
+	// filter, so a just-opened bottom sheet's first laid-out
+	// frame yields a clipped rect (top>bottom) and FindAndClick
+	// injects the tap off-screen — a no-op that leaves the flow
+	// desynced. A settled frame a moment later taps the real
+	// target. (Mirrors the assert-side viewport check from #39.)
+	// The agent declined to tap. Nothing was injected,
+	// so just keep polling for a settled frame.
+	if !clicked {
+		// blockedBy is set when the hit test found something
+		// over the point; otherwise the rect itself was bad.
+		if blockedBy != "" {
+			logger.Info("[devicelab] tap skipped before injection for %s: point covered by %s — re-polling",
+				step.Selector.Describe(), blockedBy)
+			lastErr = fmt.Errorf("tap point is covered by %s", blockedBy)
+		} else {
+			logger.Info("[devicelab] tap skipped before injection (untappable rect) for %s: w=%d h=%d center=(%d,%d) screen=%dx%d — re-polling",
+				step.Selector.Describe(), info.Bounds.Width, info.Bounds.Height,
+				info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, guardW, guardH)
+			lastErr = fmt.Errorf("element rect not tappable (w=%d h=%d center=(%d,%d) screen=%dx%d)",
+				info.Bounds.Width, info.Bounds.Height,
+				info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, guardW, guardH)
+		}
+		time.Sleep(50 * time.Millisecond)
+		return nil, lastErr
+	}
+
+	// Fallback for an agent predating the guard above: it
+	// has already clicked, so this only stops a second tap.
+	if rectOK {
+		// Validate against the FULL physical display (same coordinate
+		// space as info.Bounds, which come from the accessibility
+		// hierarchy). screenSize() can report the USABLE height (minus
+		// the status bar), which wrongly condemns on-screen bottom
+		// buttons/FABs whose centre sits in the bottom band.
+		if sw, sh, serr := d.tappableScreenSize(); serr == nil && !boundsTappable(info.Bounds, sw, sh) {
+			logger.Info("[devicelab] tap rejected (off-screen/malformed rect) for %s: w=%d h=%d center=(%d,%d) screen=%dx%d — re-polling",
+				step.Selector.Describe(), info.Bounds.Width, info.Bounds.Height,
+				info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, sw, sh)
+			lastErr = fmt.Errorf("element rect not tappable (w=%d h=%d center=(%d,%d) screen=%dx%d)",
+				info.Bounds.Width, info.Bounds.Height,
+				info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, sw, sh)
+			time.Sleep(50 * time.Millisecond)
+			return nil, lastErr
+		}
+	}
+
+	// Post-tap verification candidates (all wired but
+	// NOT called — empirically none reliably distinguish
+	// "tap had effect" from "tap fired ripple only" on
+	// the React Navigation showcase app):
+	//   d.tapHadEffectViaWindowUpdate("")  // Maestro's isWindowUpdating
+	//   d.tapHadEffect()                   // element-presence check
+	// Both produce false positives (ripples count) and
+	// false negatives (buttons persist across screens).
+	return successResult("Tapped on element", info), nil
 }
 
 // tapPointInjectable reports whether a resolved tap point may be injected: the

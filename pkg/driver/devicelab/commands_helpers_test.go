@@ -1862,6 +1862,10 @@ func (s *scriptedClient) FindAndClick(strategy, selector string) (*uiautomator2.
 	s.findAndClickCalls++
 	return s.findAndClickReturn, s.findAndClickErr
 }
+func (s *scriptedClient) FindFirstAndClickChecked([]string, int, int, bool) (*uiautomator2.Element, bool, string, int, error) {
+	return nil, false, "", -1, errors.New("unknown_method: Unknown method: Gesture.findFirstAndClick")
+}
+
 func (s *scriptedClient) FindAndClickChecked(strategy, selector string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, error) {
 	elem, clicked, err := s.FindAndClickGuarded(strategy, selector, screenW, screenH)
 	s.findAndClickHitTest = hitTest
