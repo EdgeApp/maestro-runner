@@ -30,11 +30,6 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		return d.tapOnPointWithCoords(step.Point)
 	}
 
-	// A tap straight after another waits for the first one's UI to settle:
-	// tapping duckduckgo's menu button while the menu from the previous tap
-	// was still closing did nothing.
-	d.settleAfterTap()
-
 	wasInput := d.consumeInputFlag()
 
 	// Quick check: if previous step was input and keyboard is blocking, fail fast
@@ -1655,14 +1650,7 @@ func (d *Driver) settle(maxMs int, what string) {
 	}
 }
 
-func (d *Driver) settleAfterTap() {
-	if d.lastStepWasTap {
-		d.settle(settleAfterTapTimeoutMs, "tap")
-	}
-}
-
 func (d *Driver) back(_ *flow.BackStep) *core.CommandResult {
-	d.settleAfterTap()
 	if err := d.client.Back(); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to press back: %v", err))
 	}
@@ -1677,7 +1665,6 @@ func (d *Driver) pressKey(step *flow.PressKeyStep) *core.CommandResult {
 		return errorResult(fmt.Errorf("unknown key: %s", key), fmt.Sprintf("Unknown key: %s", key))
 	}
 
-	d.settleAfterTap()
 	if err := d.client.PressKeyCode(keyCode); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to press key: %v", err))
 	}
@@ -2186,10 +2173,6 @@ func getAllPermissions() []string {
 // ============================================================================
 
 func (d *Driver) copyTextFrom(step *flow.CopyTextFromStep) *core.CommandResult {
-	// The element is usually already there, so finding it does not wait for
-	// what the tap before started: duckduckgo's spoofing page swaps the
-	// address bar to about:blank a moment after "run" is tapped.
-	d.settleAfterTap()
 	elem, info, err := d.findElement(step.Selector, step.IsOptional(), step.TimeoutMs)
 	if err != nil {
 		return errorResult(err, fmt.Sprintf("Element not found: %v", err))

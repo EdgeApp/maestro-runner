@@ -513,6 +513,16 @@ func (d *Driver) SetWaitForIdleTimeout(ms int) error {
 func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	start := time.Now()
 
+	// A step that reads or acts on the screen right after a tap waits for the
+	// tap's UI to settle first, as Maestro settles after every tap. Without it
+	// an assert matched the element just tapped on the screen being left (a
+	// React Navigation list row "Albums" passing for the Albums screen), and a
+	// tap on duckduckgo's menu button while the previous menu was still
+	// closing did nothing.
+	if d.lastStepWasTap && readsScreen(step) {
+		d.settle(settleAfterTapTimeoutMs, "tap")
+	}
+
 	var result *core.CommandResult
 	switch s := step.(type) {
 	// Tap commands
@@ -2113,4 +2123,20 @@ func (d *Driver) SetAnimationsDisabled(disabled bool) error {
 		return fmt.Errorf("disableAnimations needs device shell access")
 	}
 	return d.animations.Set(d.device, disabled)
+}
+
+// readsScreen reports whether a step reads or acts on what is on screen, so
+// it must not run while the previous tap's UI is still changing. Steps that
+// work on the app or device (launch, permissions, location, typing into the
+// focused field) do not wait.
+func readsScreen(step flow.Step) bool {
+	switch step.(type) {
+	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep,
+		*flow.DragAndDropStep, *flow.AssertVisibleStep, *flow.AssertNotVisibleStep,
+		*flow.WaitUntilStep, *flow.ScrollStep, *flow.ScrollUntilVisibleStep, *flow.SwipeStep,
+		*flow.BackStep, *flow.PressKeyStep, *flow.CopyTextFromStep,
+		*flow.TakeScreenshotStep, *flow.AssertScreenshotStep:
+		return true
+	}
+	return false
 }

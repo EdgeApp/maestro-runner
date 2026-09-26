@@ -1781,6 +1781,22 @@ func TestDriver_WaitForSettle(t *testing.T) {
 	}
 }
 
+func TestReadsScreen(t *testing.T) {
+	reads := []flow.Step{&flow.TapOnStep{}, &flow.AssertVisibleStep{}, &flow.AssertNotVisibleStep{},
+		&flow.WaitUntilStep{}, &flow.ScrollUntilVisibleStep{}, &flow.SwipeStep{}, &flow.BackStep{},
+		&flow.PressKeyStep{}, &flow.CopyTextFromStep{}, &flow.TakeScreenshotStep{}}
+	for _, s := range reads {
+		if !readsScreen(s) {
+			t.Errorf("readsScreen(%T) = false", s)
+		}
+	}
+	for _, s := range []flow.Step{&flow.InputTextStep{}, &flow.HideKeyboardStep{}, &flow.LaunchAppStep{}, &flow.SetLocationStep{}} {
+		if readsScreen(s) {
+			t.Errorf("readsScreen(%T) = true", s)
+		}
+	}
+}
+
 // A settle keeps its own limit whatever waitForIdleTimeout is (its 200ms
 // default once cut every settle short), and waitForIdleTimeout 0 skips it.
 func TestSettle_IdleTimeout(t *testing.T) {
@@ -1799,8 +1815,7 @@ func TestSettle_IdleTimeout(t *testing.T) {
 			if tc.idle >= 0 {
 				_ = d.SetWaitForIdleTimeout(tc.idle)
 			}
-			d.lastStepWasTap = true
-			d.settleAfterTap()
+			d.settle(settleAfterTapTimeoutMs, "tap")
 			if len(client.settleCalls) != len(tc.calls) || (len(tc.calls) > 0 && client.settleCalls[0] != tc.calls[0]) {
 				t.Errorf("settle calls = %v, want %v", client.settleCalls, tc.calls)
 			}

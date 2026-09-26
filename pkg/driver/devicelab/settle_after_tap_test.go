@@ -70,7 +70,7 @@ func TestCopyTextFromSettlesAfterTap(t *testing.T) {
 	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
 	d := New(client, &core.PlatformInfo{}, &mockShell{})
 	d.lastStepWasTap = true
-	d.copyTextFrom(&flow.CopyTextFromStep{BaseStep: flow.BaseStep{TimeoutMs: 1}, Selector: flow.Selector{ID: "omnibarTextInput"}})
+	d.Execute(&flow.CopyTextFromStep{BaseStep: flow.BaseStep{TimeoutMs: 1}, Selector: flow.Selector{ID: "omnibarTextInput"}})
 	if client.settles != 1 {
 		t.Errorf("copyTextFrom after a tap settled %d times, want 1", client.settles)
 	}
@@ -97,13 +97,36 @@ func TestTapSettlesOnlyAfterTap(t *testing.T) {
 	d := New(client, &core.PlatformInfo{}, &mockShell{})
 	tap := &flow.TapOnStep{BaseStep: flow.BaseStep{StepType: flow.StepTapOn, TimeoutMs: 1}, Selector: flow.Selector{Text: "Menu"}}
 
-	d.tapOn(tap)
+	d.Execute(tap)
 	if client.settles != 0 {
 		t.Fatalf("first tap settled %d times", client.settles)
 	}
 	d.lastStepWasTap = true
-	d.tapOn(tap)
+	d.Execute(tap)
 	if client.settles != 1 {
 		t.Errorf("tap after a tap settled %d times, want 1", client.settles)
+	}
+}
+
+// An assert right after a tap settles first, so it reads the screen the tap
+// led to and not the one being left; typing after a tap does not wait.
+func TestAssertSettlesAfterTap(t *testing.T) {
+	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
+	d := New(client, &core.PlatformInfo{}, &mockShell{})
+	assert := &flow.AssertVisibleStep{BaseStep: flow.BaseStep{StepType: flow.StepAssertVisible, TimeoutMs: 1}, Selector: flow.Selector{Text: "Albums"}}
+
+	d.lastStepWasTap = true
+	d.Execute(assert)
+	if client.settles != 1 {
+		t.Fatalf("assert after a tap settled %d times, want 1", client.settles)
+	}
+	d.Execute(assert)
+	if client.settles != 1 {
+		t.Fatalf("assert after an assert settled again: %d", client.settles)
+	}
+	d.lastStepWasTap = true
+	d.Execute(&flow.HideKeyboardStep{BaseStep: flow.BaseStep{StepType: flow.StepHideKeyboard}})
+	if client.settles != 1 {
+		t.Errorf("hideKeyboard after a tap settled: %d", client.settles)
 	}
 }
