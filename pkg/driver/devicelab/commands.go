@@ -863,8 +863,11 @@ func (d *Driver) assertNotVisibleBrowser(sel flow.Selector, timeoutMs int) *core
 // ============================================================================
 
 // focusWaitForTyping is how long inputText without a selector waits for a
-// field to take focus before typing blind.
-const focusWaitForTyping = time.Second
+// field to take focus before typing blind. It returns as soon as a field has
+// focus. At 1s, duckduckgo's address bar, focused a little later after
+// onboarding, was typed into one key at a time: ~80ms a character, 3.4s
+// for a URL, where setting the focused field's text takes ~0.1s.
+const focusWaitForTyping = 3 * time.Second
 
 // waitForFocused polls for the focused element for up to wait, returning nil
 // when nothing takes focus in that time.
