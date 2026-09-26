@@ -71,6 +71,8 @@ type Driver struct {
 	client UIA2Client
 	info   *core.PlatformInfo
 	device ShellExecutor // for ADB commands (launchApp, stopApp, clearState)
+	// Animation scales saved while disableAnimations is on
+	animations core.AndroidAnimations
 
 	// Parent context for element-finding operations (nil = context.Background())
 	ctx context.Context
@@ -1367,4 +1369,13 @@ func successResult(msg string, elem *core.ElementInfo) *core.CommandResult {
 
 func errorResult(err error, msg string) *core.CommandResult {
 	return core.ErrorResult(err, msg)
+}
+
+// SetAnimationsDisabled switches the device's animation scales off, or puts
+// back the ones saved when they were switched off (disableAnimations).
+func (d *Driver) SetAnimationsDisabled(disabled bool) error {
+	if d.device == nil {
+		return fmt.Errorf("disableAnimations needs device shell access")
+	}
+	return d.animations.Set(d.device, disabled)
 }

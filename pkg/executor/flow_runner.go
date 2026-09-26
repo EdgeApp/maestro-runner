@@ -60,6 +60,12 @@ func (fr *FlowRunner) Run() FlowResult {
 	// Set parent context on driver so element-finding respects cancellation
 	fr.driver.SetContext(fr.ctx)
 
+	// A flow's disableAnimations overrides the run's setting for this flow.
+	if want := fr.flow.Config.DisableAnimations; want != nil && *want != fr.config.DisableAnimations {
+		setAnimationsDisabled(fr.driver, *want)
+		defer setAnimationsDisabled(fr.driver, fr.config.DisableAnimations)
+	}
+
 	// Import system environment variables
 	fr.script.ImportSystemEnv()
 

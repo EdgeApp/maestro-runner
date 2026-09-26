@@ -172,3 +172,33 @@ func TestLoadFromDir_PrefersYamlOverYml(t *testing.T) {
 		t.Errorf("expected platform ios (from config.yaml), got %s", cfg.Platform)
 	}
 }
+
+// platform: is our target-platform string or Maestro's per-platform map.
+func TestPlatformFormsAndDisableAnimations(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) *Config {
+		t.Helper()
+		p := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg
+	}
+
+	cfg := write("appId: com.app\nplatform: android\n")
+	if cfg.Platform != "android" || cfg.DisableAnimations("android") {
+		t.Errorf("string form: platform=%q disable=%v", cfg.Platform, cfg.DisableAnimations("android"))
+	}
+
+	cfg = write("appId: com.app\nflows:\n  - \"**\"\nplatform:\n  android:\n    disableAnimations: true\n  ios:\n    disableAnimations: false\n")
+	if !cfg.DisableAnimations("android") || cfg.DisableAnimations("ios") {
+		t.Errorf("map form: android=%v ios=%v", cfg.DisableAnimations("android"), cfg.DisableAnimations("ios"))
+	}
+	if cfg.AppID != "com.app" || len(cfg.Flows) != 1 || cfg.Platform != "" {
+		t.Errorf("map form lost other keys: %+v", cfg)
+	}
+}

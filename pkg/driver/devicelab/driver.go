@@ -102,6 +102,8 @@ type Driver struct {
 	client DeviceLabClient
 	info   *core.PlatformInfo
 	device ShellExecutor // for ADB commands (fallback)
+	// Animation scales saved while disableAnimations is on
+	animations core.AndroidAnimations
 
 	// currentAppID is the app the flow last launched, remembered so a
 	// mid-flow death can be explained rather than surfacing as "not found".
@@ -2097,4 +2099,13 @@ func selectRelativeCandidate(candidates []*ParsedElement, index string, filterTy
 		}
 	}
 	return SelectByIndex(candidates, index)
+}
+
+// SetAnimationsDisabled switches the device's animation scales off, or puts
+// back the ones saved when they were switched off (disableAnimations).
+func (d *Driver) SetAnimationsDisabled(disabled bool) error {
+	if d.device == nil {
+		return fmt.Errorf("disableAnimations needs device shell access")
+	}
+	return d.animations.Set(d.device, disabled)
 }
