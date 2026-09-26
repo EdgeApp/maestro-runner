@@ -109,3 +109,49 @@ func TestTapPointClipsToScreen(t *testing.T) {
 		t.Errorf("taller than the screen: got (%v,%v,%v), want (201,487,true)", x, y, ok)
 	}
 }
+
+// settleAfterTap waits while the tapped element moves and stops when it
+// comes to rest or goes away; an element that never moves costs at most
+// tapEffectWait.
+func TestSettleAfterTap(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		xs     []int // successive x positions; -1 = element gone
+		minCal int
+	}{
+		{"push slides out then rests", []int{10, 10, 0, -40, -80, -120, -120}, 7},
+		{"gone mid-push", []int{10, 0, -1}, 3},
+		{"never moves", []int{10}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				mu.Lock()
+				i := calls
+				calls++
+				mu.Unlock()
+				if i >= len(tc.xs) {
+					i = len(tc.xs) - 1
+				}
+				if tc.xs[i] == -1 {
+					w.WriteHeader(http.StatusNotFound)
+					jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"error": "stale element reference"}})
+					return
+				}
+				jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"x": tc.xs[i], "y": 200, "width": 100, "height": 44}})
+			}))
+			defer server.Close()
+			d := createTestDriver(server)
+			d.lastTapID = "tapped"
+			d.settleAfterTap()
+			if calls < tc.minCal {
+				t.Errorf("rect reads = %d, want at least %d", calls, tc.minCal)
+			}
+			if calls > 40 {
+				t.Errorf("rect reads = %d: did not stop", calls)
+			}
+		})
+	}
+}

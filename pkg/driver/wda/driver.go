@@ -50,6 +50,10 @@ type Driver struct {
 	appDeathCount    int
 	appDeathFirstAt  time.Time
 	crashAbortReason string
+
+	// The element the last step tapped, while the next step may still need
+	// to wait for that tap's UI to settle
+	lastTapID string
 }
 
 // Crash-loop detection thresholds.
@@ -220,6 +224,15 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 		}
 	}
 
+	// An action right after a tap waits for that tap's UI to settle. WDA's
+	// own wait for quiescence is off (it crashed XCTest), so a second tap
+	// went out tens of milliseconds after the first, before the push the
+	// first one started, and landed on the screen being left (#179).
+	if d.lastTapID != "" && actsOnScreen(step) {
+		d.settleAfterTap()
+	}
+	d.lastTapID = ""
+
 	var result *core.CommandResult
 	switch s := step.(type) {
 	// Tap commands
@@ -343,6 +356,57 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	result.Duration = time.Since(start)
 	d.trackCrashLoop(result)
 	return result
+}
+
+// actsOnScreen reports whether a step acts on what is on screen, so it must
+// not run while the previous tap's UI is still changing.
+func actsOnScreen(step flow.Step) bool {
+	switch step.(type) {
+	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep,
+		*flow.SwipeStep, *flow.ScrollStep, *flow.BackStep, *flow.PressKeyStep, *flow.InputTextStep:
+		return true
+	}
+	return false
+}
+
+// Settle limits after a tap: how long a screen change may take to show, and
+// how long it may take to finish.
+const (
+	tapEffectWait   = 400 * time.Millisecond
+	tapSettleLimit  = 1500 * time.Millisecond
+	tapSettleSample = 50 * time.Millisecond
+)
+
+// settleAfterTap waits for the UI the last tap started to finish, watching
+// the tapped element: if it moves or goes away a transition is under way,
+// and it waits until the element is gone or at rest. An element that has
+// not moved within tapEffectWait means the tap changed nothing there. Each
+// look is one rect call, far cheaper than comparing page sources.
+func (d *Driver) settleAfterTap() {
+	start := time.Now()
+	moving := false
+	var prev core.Bounds
+	for first := true; time.Since(start) < tapSettleLimit; first = false {
+		x, y, w, h, err := d.client.ElementRect(d.lastTapID)
+		if err != nil {
+			return // gone: the screen it was on has been replaced
+		}
+		cur := core.Bounds{X: x, Y: y, Width: w, Height: h}
+		// Compare readings taken after the tap with each other: the bounds
+		// read before the click can differ from the first one after it
+		// without anything moving, which read as "moved, then at rest".
+		switch {
+		case !first && cur != prev:
+			moving = true
+		case moving:
+			return // moved and came to rest
+		case time.Since(start) >= tapEffectWait:
+			return // never moved: nothing to wait for
+		}
+		prev = cur
+		time.Sleep(tapSettleSample)
+	}
+	logger.Debug("[wda] screen still changing %v after the last tap — continuing", tapSettleLimit)
 }
 
 // trackCrashLoop counts consecutive "app died on launch" failures and trips a

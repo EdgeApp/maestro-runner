@@ -123,6 +123,7 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		}
 	}
 
+	d.lastTapID = info.ID
 	return successResult("Tapped element", info)
 }
 
