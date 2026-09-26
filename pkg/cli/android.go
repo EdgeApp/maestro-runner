@@ -466,10 +466,13 @@ func createDeviceLabDriver(cfg *RunConfig, dev *device.AndroidDevice, info devic
 	logger.Info("Session created: %s", session.SessionID)
 	printSetupSuccess("Session created")
 
-	// Set waitForIdle timeout
-	if err := adapter.SetAppiumSettings(map[string]interface{}{
-		"waitForIdleTimeout": cfg.WaitForIdleTimeout,
-	}); err != nil {
+	// Set waitForIdle timeout. MAESTRO_DEVICELAB_SETTLE_DIAG=1 also turns on
+	// the agent's settle diagnostics (logcat, tag DeviceLabBridge).
+	settings := map[string]interface{}{"waitForIdleTimeout": cfg.WaitForIdleTimeout}
+	if os.Getenv("MAESTRO_DEVICELAB_SETTLE_DIAG") != "" {
+		settings["settleDiagnostics"] = true
+	}
+	if err := adapter.SetAppiumSettings(settings); err != nil {
 		fmt.Printf("  %s⚠%s Warning: failed to set driver settings: %v\n", color(colorYellow), color(colorReset), err)
 	}
 
