@@ -411,10 +411,14 @@ func matchesText(pattern, text, contentDesc, hintText string) bool {
 	// Literal text - case-insensitive contains. A dotted selector is a regex
 	// to Maestro and must match whole ("DDG." is not in "Not DDG."), so it
 	// skips this and goes to the whole-string match below.
-	if !strings.Contains(pattern, ".") && (containsIgnoreCase(text, pattern) ||
-		containsIgnoreCase(contentDesc, pattern) ||
-		containsIgnoreCase(hintText, pattern)) {
-		return true
+	// Text that wraps onto a new line matches with the break read as a
+	// space, as Maestro also matches each value with "\n" replaced by " ".
+	if !strings.Contains(pattern, ".") {
+		for _, s := range []string{text, contentDesc, hintText} {
+			if containsIgnoreCase(s, pattern) || containsIgnoreCase(strings.ReplaceAll(s, "\n", " "), pattern) {
+				return true
+			}
+		}
 	}
 
 	// A lone dot reads as plain text ("Mr. Smith"), but Maestro compiles every

@@ -1637,6 +1637,7 @@ type richClient struct {
 }
 
 func (r *richClient) Source() (string, error)         { return r.source, r.sourceErr }
+func (r *richClient) Snapshot(int) (string, error)    { return r.source, r.sourceErr }
 func (r *richClient) GetOrientation() (string, error) { return r.orientation, nil }
 func (r *richClient) GetClipboard() (string, error)   { return r.clipboard, nil }
 func (r *richClient) WaitForSettle(timeoutMs, quietMs int) (bool, error) {
@@ -2043,11 +2044,20 @@ func TestLongPressOn_CustomDuration(t *testing.T) {
 // assertVisible — uses findElementFast which calls FindElement
 // =============================================================================
 
+// screenWithID is a one-element screen for the whole-screen checks.
+func screenWithID(id string) func() (string, error) {
+	return func() (string, error) {
+		return `<hierarchy><node class="android.widget.TextView" text="Hello" resource-id="` + id +
+			`" displayed="true" enabled="true" bounds="[0,0][10,10]"/></hierarchy>`, nil
+	}
+}
+
 func TestAssertVisible_Success(t *testing.T) {
 	client := &scriptedClient{trackingClient: newTrackingClient()}
 	client.findElementReturn = uiautomator2.NewCachedElement(
 		"id", "Hello", uiautomator2.ElementRect{X: 0, Y: 0, Width: 10, Height: 10},
 	)
+	client.sourceFunc = screenWithID("el")
 	driver := New(client, &core.PlatformInfo{}, &mockShell{})
 
 	res := driver.assertVisible(&flow.AssertVisibleStep{Selector: flow.Selector{ID: "el"}})
@@ -2223,6 +2233,7 @@ func TestAssertNotVisible_ElementStillPresent(t *testing.T) {
 	client.findElementReturn = uiautomator2.NewCachedElement(
 		"id", "Hello", uiautomator2.ElementRect{X: 0, Y: 0, Width: 10, Height: 10},
 	)
+	client.sourceFunc = screenWithID("el")
 	driver := New(client, &core.PlatformInfo{}, &mockShell{})
 
 	// Element is "still visible" → expect failure after short polling timeout.
@@ -2484,6 +2495,7 @@ func TestWaitUntil_Visible_Success(t *testing.T) {
 	client.findElementReturn = uiautomator2.NewCachedElement(
 		"id", "Hello", uiautomator2.ElementRect{X: 0, Y: 0, Width: 10, Height: 10},
 	)
+	client.sourceFunc = screenWithID("el")
 	driver := New(client, &core.PlatformInfo{}, &mockShell{})
 
 	sel := flow.Selector{ID: "el"}

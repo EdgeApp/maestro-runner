@@ -77,11 +77,22 @@ func (m *mockDeviceLabClient) PressKeyCode(keyCode int) error                { r
 func (m *mockDeviceLabClient) SendKeyActions(text string) error              { return nil }
 func (m *mockDeviceLabClient) AddMedia(name, mime string, data []byte) error { return nil }
 func (m *mockDeviceLabClient) Screenshot() ([]byte, error)                   { return nil, nil }
-func (m *mockDeviceLabClient) Source() (string, error)                       { return m.sourceFunc() }
-func (m *mockDeviceLabClient) GetOrientation() (string, error)               { return "PORTRAIT", nil }
-func (m *mockDeviceLabClient) SetOrientation(string) error                   { return nil }
-func (m *mockDeviceLabClient) GetClipboard() (string, error)                 { return "", nil }
-func (m *mockDeviceLabClient) SetClipboard(string) error                     { return nil }
+func (m *mockDeviceLabClient) Source() (string, error) {
+	if m.sourceFunc == nil {
+		return "", errors.New("no source")
+	}
+	return m.sourceFunc()
+}
+func (m *mockDeviceLabClient) Snapshot(int) (string, error) {
+	if m.sourceFunc == nil {
+		return "", errors.New("no source")
+	}
+	return m.sourceFunc()
+}
+func (m *mockDeviceLabClient) GetOrientation() (string, error) { return "PORTRAIT", nil }
+func (m *mockDeviceLabClient) SetOrientation(string) error     { return nil }
+func (m *mockDeviceLabClient) GetClipboard() (string, error)   { return "", nil }
+func (m *mockDeviceLabClient) SetClipboard(string) error       { return nil }
 func (m *mockDeviceLabClient) GetDeviceInfo() (*uiautomator2.DeviceInfo, error) {
 	return &uiautomator2.DeviceInfo{RealDisplaySize: "1080x2400"}, nil
 }

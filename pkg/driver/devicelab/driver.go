@@ -63,6 +63,7 @@ type DeviceLabClient interface {
 	// Device state
 	Screenshot() ([]byte, error)
 	Source() (string, error)
+	Snapshot(waitForIdleMs int) (string, error)
 	GetOrientation() (string, error)
 	SetOrientation(orientation string) error
 	GetClipboard() (string, error)
@@ -2154,4 +2155,78 @@ func readsScreen(step flow.Step) bool {
 		return true
 	}
 	return false
+}
+
+// snapshotPollGap spaces the reads of a visibility check: each is one full
+// tree read (~50-100ms), so this keeps a poll near 10 reads a second without
+// spinning the agent.
+const snapshotPollGap = 50 * time.Millisecond
+
+// checksBySnapshot reports whether a visibility check for sel can be answered
+// from one whole-screen read matched on the host. Relative, index and CSS
+// selectors keep their own paths.
+func checksBySnapshot(sel flow.Selector) bool {
+	return !sel.HasRelativeSelector() && !sel.HasNonZeroIndex() && sel.CSS == "" &&
+		(sel.Text != "" || sel.ID != "")
+}
+
+// findVisibleOnce reads every window's tree once and returns the first
+// element matching sel that is visible and has area on screen. One read
+// answers for every way the selector can match (text, description and hint;
+// whole, part or regex), where the agent's per-form finds took a call each:
+// nine for a text selector, ~1.8s a round when the element was absent.
+func (d *Driver) findVisibleOnce(sel flow.Selector) (*core.ElementInfo, error) {
+	xml, err := d.client.Snapshot(0)
+	if err != nil {
+		if xml, err = d.client.Source(); err != nil {
+			return nil, fmt.Errorf("failed to read the screen: %w", err)
+		}
+	}
+	elements, err := ParsePageSource(xml)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse the screen: %w", err)
+	}
+	for _, e := range FilterBySelector(elements, sel) {
+		if e.Bounds.Width <= 0 || e.Bounds.Height <= 0 {
+			continue
+		}
+		c := GetClickableElement(e)
+		return &core.ElementInfo{
+			Text:    e.Text,
+			Bounds:  core.Bounds{X: c.Bounds.X, Y: c.Bounds.Y, Width: c.Bounds.Width, Height: c.Bounds.Height},
+			Enabled: e.Enabled,
+			Visible: true,
+		}, nil
+	}
+	return nil, fmt.Errorf("element '%s' not found", sel.Describe())
+}
+
+// findVisible polls findVisibleOnce until sel is on screen or the timeout
+// (counted from the first read) runs out. A first miss may re-issue the last
+// tap, as the lazy retry does for the per-form finds.
+func (d *Driver) findVisible(sel flow.Selector, optional bool, stepTimeoutMs int) (*core.ElementInfo, error) {
+	start := time.Now()
+	deadline := start.Add(d.calculateTimeout(optional, stepTimeoutMs))
+	info, err := d.findVisibleOnce(sel)
+	if err == nil {
+		return info, nil
+	}
+	for d.maybeLazyRetryTap() {
+		logger.Info("[devicelab] lazy retry: re-issued tap on %s after assertion probe failed", d.lastTapSelector.Describe())
+		if info, err = d.findVisibleOnce(sel); err == nil {
+			return info, nil
+		}
+	}
+	ctx := d.parentContext()
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(snapshotPollGap):
+		}
+		if info, err = d.findVisibleOnce(sel); err == nil {
+			return info, nil
+		}
+	}
+	return nil, err
 }

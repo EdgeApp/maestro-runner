@@ -595,7 +595,13 @@ func (d *Driver) assertVisible(step *flow.AssertVisibleStep) *core.CommandResult
 		return d.assertVisibleWithWebViewText(step)
 	}
 
-	_, info, err := d.findElementFastWithLazyRetry(step.Selector, step.IsOptional(), step.TimeoutMs)
+	var info *core.ElementInfo
+	var err error
+	if checksBySnapshot(step.Selector) {
+		info, err = d.findVisible(step.Selector, step.IsOptional(), step.TimeoutMs)
+	} else {
+		_, info, err = d.findElementFastWithLazyRetry(step.Selector, step.IsOptional(), step.TimeoutMs)
+	}
 	if err != nil {
 		err = d.notFoundOrCrash(err)
 		return errorResult(err, fmt.Sprintf("Element not visible: %v", err))
@@ -760,9 +766,19 @@ func (d *Driver) assertNotVisible(step *flow.AssertNotVisibleStep) *core.Command
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Millisecond)
 	pollInterval := 500 * time.Millisecond
+	bySnapshot := checksBySnapshot(step.Selector)
+	if bySnapshot {
+		pollInterval = snapshotPollGap
+	}
 
 	for {
-		_, info, err := d.findElementQuick(step.Selector, 0)
+		var info *core.ElementInfo
+		var err error
+		if bySnapshot {
+			info, err = d.findVisibleOnce(step.Selector)
+		} else {
+			_, info, err = d.findElementQuick(step.Selector, 0)
+		}
 		if err != nil || info == nil {
 			return successResult("Element is not visible", nil)
 		}
@@ -2563,7 +2579,7 @@ func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
 			)
 		default:
 			if waitingForVisible {
-				_, info, err := d.findElementOnce(*step.Visible)
+				info, err := d.findOnceForWait(*step.Visible)
 				if err == nil && info != nil {
 					return successResult("Element is now visible", info)
 				}
@@ -2575,13 +2591,26 @@ func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
 					}
 				}
 			} else {
-				_, info, err := d.findElementOnce(*step.NotVisible)
+				info, err := d.findOnceForWait(*step.NotVisible)
 				if err != nil || info == nil {
 					return successResult("Element is no longer visible", nil)
 				}
 			}
+			if checksBySnapshot(*selector) {
+				time.Sleep(snapshotPollGap)
+			}
 		}
 	}
+}
+
+// findOnceForWait is one extendedWaitUntil look: a whole-screen read when the
+// selector allows it, else the per-form finds.
+func (d *Driver) findOnceForWait(sel flow.Selector) (*core.ElementInfo, error) {
+	if checksBySnapshot(sel) {
+		return d.findVisibleOnce(sel)
+	}
+	_, info, err := d.findElementOnce(sel)
+	return info, err
 }
 
 func (d *Driver) waitForAnimationToEnd(step *flow.WaitForAnimationToEndStep) *core.CommandResult {

@@ -410,6 +410,23 @@ func (a *Adapter) Source() (string, error) {
 	return result.XML, nil
 }
 
+// Snapshot returns the XML of every window's full accessibility tree, with
+// hint text, in one read. waitForIdleMs is how long the agent first waits for
+// the app to go idle; 0 reads at once.
+func (a *Adapter) Snapshot(waitForIdleMs int) (string, error) {
+	resp, err := a.client.Call("UI.snapshot", map[string]interface{}{"waitForIdleMs": waitForIdleMs})
+	if err != nil {
+		return "", err
+	}
+
+	var result SourceResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return "", fmt.Errorf("parse snapshot result: %w", err)
+	}
+
+	return result.XML, nil
+}
+
 // GetOrientation returns the current device orientation.
 func (a *Adapter) GetOrientation() (string, error) {
 	resp, err := a.client.Call("Device.getOrientation", nil)
