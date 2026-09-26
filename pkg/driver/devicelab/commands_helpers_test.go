@@ -1782,18 +1782,16 @@ func TestDriver_WaitForSettle(t *testing.T) {
 	}
 }
 
-func TestReadsScreen(t *testing.T) {
-	reads := []flow.Step{&flow.TapOnStep{}, &flow.AssertVisibleStep{}, &flow.AssertNotVisibleStep{},
-		&flow.WaitUntilStep{}, &flow.ScrollUntilVisibleStep{}, &flow.SwipeStep{}, &flow.BackStep{},
-		&flow.PressKeyStep{}, &flow.CopyTextFromStep{}, &flow.TakeScreenshotStep{}}
-	for _, s := range reads {
-		if !readsScreen(s) {
-			t.Errorf("readsScreen(%T) = false", s)
+func TestActsOnScreen(t *testing.T) {
+	for _, s := range []flow.Step{&flow.TapOnStep{}, &flow.SwipeStep{}, &flow.BackStep{}, &flow.PressKeyStep{}, &flow.CopyTextFromStep{}} {
+		if !actsOnScreen(s) {
+			t.Errorf("actsOnScreen(%T) = false", s)
 		}
 	}
-	for _, s := range []flow.Step{&flow.InputTextStep{}, &flow.HideKeyboardStep{}, &flow.LaunchAppStep{}, &flow.SetLocationStep{}} {
-		if readsScreen(s) {
-			t.Errorf("readsScreen(%T) = true", s)
+	for _, s := range []flow.Step{&flow.AssertVisibleStep{}, &flow.AssertNotVisibleStep{}, &flow.WaitUntilStep{},
+		&flow.InputTextStep{}, &flow.HideKeyboardStep{}, &flow.LaunchAppStep{}} {
+		if actsOnScreen(s) {
+			t.Errorf("actsOnScreen(%T) = true", s)
 		}
 	}
 }

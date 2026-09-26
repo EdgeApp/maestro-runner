@@ -109,26 +109,19 @@ func TestTapSettlesOnlyAfterTap(t *testing.T) {
 	}
 }
 
-// An assert right after a tap settles first, so it reads the screen the tap
-// led to and not the one being left; typing after a tap does not wait.
-func TestAssertSettlesAfterTap(t *testing.T) {
+// Asserts after a tap do not settle: they poll, and an element on both
+// screens passes correctly either way. hideKeyboard does not either.
+func TestAssertDoesNotSettleAfterTap(t *testing.T) {
 	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
 	d := New(client, &core.PlatformInfo{}, &mockShell{})
 	assert := &flow.AssertVisibleStep{BaseStep: flow.BaseStep{StepType: flow.StepAssertVisible, TimeoutMs: 1}, Selector: flow.Selector{Text: "Albums"}}
 
 	d.lastStepWasTap = true
 	d.Execute(assert)
-	if client.settles != 1 {
-		t.Fatalf("assert after a tap settled %d times, want 1", client.settles)
-	}
-	d.Execute(assert)
-	if client.settles != 1 {
-		t.Fatalf("assert after an assert settled again: %d", client.settles)
-	}
 	d.lastStepWasTap = true
 	d.Execute(&flow.HideKeyboardStep{BaseStep: flow.BaseStep{StepType: flow.StepHideKeyboard}})
-	if client.settles != 1 {
-		t.Errorf("hideKeyboard after a tap settled: %d", client.settles)
+	if client.settles != 0 {
+		t.Errorf("settled %d times after a tap before a non-action step", client.settles)
 	}
 }
 

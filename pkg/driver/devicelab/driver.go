@@ -521,13 +521,11 @@ func (d *Driver) SetWaitForIdleTimeout(ms int) error {
 func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	start := time.Now()
 
-	// A step that reads or acts on the screen right after a tap waits for the
-	// tap's UI to settle first, as Maestro settles after every tap. Without it
-	// an assert matched the element just tapped on the screen being left (a
-	// React Navigation list row "Albums" passing for the Albums screen), and a
+	// An action right after a tap waits for the tap's UI to settle first: a
 	// tap on duckduckgo's menu button while the previous menu was still
-	// closing did nothing.
-	if d.lastStepWasTap && readsScreen(step) {
+	// closing did nothing. Asserts and checks do not wait: they poll, and an
+	// element on both screens is a correct pass either way.
+	if d.lastStepWasTap && actsOnScreen(step) {
 		d.settle(settleAfterTapTimeoutMs, "tap")
 	}
 
@@ -2153,17 +2151,13 @@ func (d *Driver) SetAnimationsDisabled(disabled bool) error {
 	return d.animations.Set(d.device, disabled)
 }
 
-// readsScreen reports whether a step reads or acts on what is on screen, so
-// it must not run while the previous tap's UI is still changing. Steps that
-// work on the app or device (launch, permissions, location, typing into the
-// focused field) do not wait.
-func readsScreen(step flow.Step) bool {
+// actsOnScreen reports whether a step acts on what is on screen, so it must
+// not run while the previous tap's UI is still changing.
+func actsOnScreen(step flow.Step) bool {
 	switch step.(type) {
 	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep,
-		*flow.DragAndDropStep, *flow.AssertVisibleStep, *flow.AssertNotVisibleStep,
-		*flow.WaitUntilStep, *flow.ScrollStep, *flow.ScrollUntilVisibleStep, *flow.SwipeStep,
-		*flow.BackStep, *flow.PressKeyStep, *flow.CopyTextFromStep,
-		*flow.TakeScreenshotStep, *flow.AssertScreenshotStep:
+		*flow.DragAndDropStep, *flow.ScrollStep, *flow.SwipeStep,
+		*flow.BackStep, *flow.PressKeyStep, *flow.CopyTextFromStep:
 		return true
 	}
 	return false
