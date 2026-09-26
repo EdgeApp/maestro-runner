@@ -124,6 +124,9 @@ type Driver struct {
 	// Set after a successful tap; back/pressKey settle first when it is set
 	lastStepWasTap bool
 
+	// Permissions each app declares, read once per run (nil: unreadable)
+	declaredPerms map[string]map[string]bool
+
 	// Set when the agent has no Gesture.findFirstAndClick (older build)
 	noFindFirstAndClick bool
 

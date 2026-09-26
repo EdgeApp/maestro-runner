@@ -1794,7 +1794,7 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 			continue
 		}
 		if strings.ToLower(name) == "all" {
-			toGrant = append(toGrant, getAllPermissions()...)
+			toGrant = append(toGrant, d.declaredOf(appID, getAllPermissions())...)
 		} else {
 			toGrant = append(toGrant, resolvePermissionShortcut(name)...)
 		}
@@ -1818,6 +1818,75 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	}
 
 	return successResult(fmt.Sprintf("Launched app: %s", appID), nil)
+}
+
+// declaredOf keeps the permissions in perms that appID declares, as Maestro
+// grants "all" from the app's manifest. Undeclared ones cannot be granted
+// anyway, and asking for all 23 took ~0.7s on every launch. The app's list
+// is read once per run; when it cannot be read, perms is returned whole.
+func (d *Driver) declaredOf(appID string, perms []string) []string {
+	declared, ok := d.declaredPerms[appID]
+	if !ok {
+		declared = d.readDeclaredPermissions(appID)
+		if d.declaredPerms == nil {
+			d.declaredPerms = map[string]map[string]bool{}
+		}
+		d.declaredPerms[appID] = declared
+	}
+	if len(declared) == 0 {
+		return perms
+	}
+	var out []string
+	for _, p := range perms {
+		if declared[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// readDeclaredPermissions returns the permissions appID requests, from the
+// "requested permissions:" section of dumpsys package, or nil.
+func (d *Driver) readDeclaredPermissions(appID string) map[string]bool {
+	if d.device == nil {
+		return nil
+	}
+	out, err := d.device.Shell("dumpsys package " + appID)
+	if err != nil {
+		return nil
+	}
+	return parseRequestedPermissions(out)
+}
+
+// parseRequestedPermissions reads the names listed under "requested
+// permissions:" in dumpsys package output, up to the next section.
+func parseRequestedPermissions(dump string) map[string]bool {
+	perms := map[string]bool{}
+	in := false
+	indent := 0
+	for _, line := range strings.Split(dump, "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+		lead := len(line) - len(strings.TrimLeft(line, " "))
+		if trimmed == "requested permissions:" {
+			in, indent = true, lead
+			continue
+		}
+		if !in {
+			continue
+		}
+		if trimmed == "" || lead <= indent {
+			break
+		}
+		name := strings.TrimSpace(strings.SplitN(trimmed, ":", 2)[0])
+		if name != "" {
+			perms[name] = true
+		}
+	}
+	if len(perms) == 0 {
+		return nil
+	}
+	return perms
 }
 
 // launchWaitTimeoutSec bounds how long `am start-activity -W` may wait.
