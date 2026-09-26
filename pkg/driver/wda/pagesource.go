@@ -226,7 +226,9 @@ func FilterBySelector(elements []*ParsedElement, sel flow.Selector) []*ParsedEle
 func matchesSelector(elem *ParsedElement, sel flow.Selector) bool {
 	// Text matching - check label, name, value, and placeholderValue
 	if sel.Text != "" {
-		if !matchesText(sel.Text, elem.Label, elem.Name, elem.Value, elem.PlaceholderValue) {
+		// Not elem.Name: that is the accessibility identifier, which only id:
+		// matches (#178). Without an identifier it equals the label anyway.
+		if !matchesText(sel.Text, elem.Label, elem.Value, elem.PlaceholderValue) {
 			return false
 		}
 	}
@@ -352,7 +354,7 @@ func ClosestTexts(elements []*ParsedElement, pattern string, max int) []string {
 	var candidates []scored
 	seen := make(map[string]bool)
 	for _, elem := range elements {
-		for _, text := range []string{elem.Label, elem.Name, elem.Value, elem.PlaceholderValue} {
+		for _, text := range []string{elem.Label, elem.Value, elem.PlaceholderValue} {
 			if text == "" || seen[text] {
 				continue
 			}

@@ -577,8 +577,11 @@ func (d *Driver) findElementForTapWithContext(ctx context.Context, sel flow.Sele
 
 			// Step 2a: Try exact-match predicate first.
 			// This prevents "Password" from matching "Forgot Password?" etc.
-			exactPredicate := fmt.Sprintf("(label == '%s' OR name == '%s' OR value == '%s')%s",
-				sel.Text, sel.Text, sel.Text, stateFilter)
+			// Text matches what the element shows (label, value), never its
+			// accessibility identifier: XCUITest reports the identifier as
+			// name, and Maestro matches ids only through id: (#178).
+			exactPredicate := fmt.Sprintf("(label == '%s' OR value == '%s')%s",
+				sel.Text, sel.Text, stateFilter)
 			exactElemID, _ := d.client.FindElement("predicate string", exactPredicate)
 
 			// If exact predicate found element, try getElementInfo directly — avoids
@@ -590,8 +593,8 @@ func (d *Driver) findElementForTapWithContext(ctx context.Context, sel flow.Sele
 			}
 
 			// Step 2b: Check if text exists via substring WDA predicate
-			predicateBase := fmt.Sprintf("label CONTAINS[c] '%s' OR name CONTAINS[c] '%s' OR value CONTAINS[c] '%s'",
-				sel.Text, sel.Text, sel.Text)
+			predicateBase := fmt.Sprintf("label CONTAINS[c] '%s' OR value CONTAINS[c] '%s'",
+				sel.Text, sel.Text)
 			predicate := "(" + predicateBase + ")" + stateFilter
 			containsElemID, textExistsErr := d.client.FindElement("predicate string", predicate)
 
@@ -636,13 +639,13 @@ func (d *Driver) findInteractiveElementByWDA(sel flow.Selector, stateFilter stri
 
 	textFieldChain := fmt.Sprintf("**/XCUIElementTypeTextField[`(label CONTAINS[c] '%s' OR value CONTAINS[c] '%s' OR placeholderValue CONTAINS[c] '%s')%s`]", sel.Text, sel.Text, sel.Text, stateFilter)
 	secureFieldChain := fmt.Sprintf("**/XCUIElementTypeSecureTextField[`(label CONTAINS[c] '%s' OR value CONTAINS[c] '%s' OR placeholderValue CONTAINS[c] '%s')%s`]", sel.Text, sel.Text, sel.Text, stateFilter)
-	buttonChain := fmt.Sprintf("**/XCUIElementTypeButton[`(label ==[c] '%s' OR name ==[c] '%s')%s`]", sel.Text, sel.Text, stateFilter)
+	buttonChain := fmt.Sprintf("**/XCUIElementTypeButton[`(label ==[c] '%s')%s`]", sel.Text, stateFilter)
 
 	// Fallback: combined predicate for all interactive types.
 	// Class chain can fail due to quiescence while predicate queries may succeed.
 	fallbackPred := fmt.Sprintf(
-		"((type == 'XCUIElementTypeTextField' OR type == 'XCUIElementTypeSecureTextField' OR type == 'XCUIElementTypeSearchField') AND (label CONTAINS[c] '%s' OR value CONTAINS[c] '%s')) OR (type == 'XCUIElementTypeButton' AND (label ==[c] '%s' OR name ==[c] '%s'))",
-		sel.Text, sel.Text, sel.Text, sel.Text,
+		"((type == 'XCUIElementTypeTextField' OR type == 'XCUIElementTypeSecureTextField' OR type == 'XCUIElementTypeSearchField') AND (label CONTAINS[c] '%s' OR value CONTAINS[c] '%s')) OR (type == 'XCUIElementTypeButton' AND label ==[c] '%s')",
+		sel.Text, sel.Text, sel.Text,
 	)
 	if stateFilter != "" {
 		fallbackPred = fmt.Sprintf("(%s)%s", fallbackPred, stateFilter)
@@ -852,8 +855,8 @@ func (d *Driver) findElementByWDA(sel flow.Selector) (*core.ElementInfo, error) 
 	if sel.Text != "" {
 		// Try generic predicate first — most assertions target StaticText/labels,
 		// so this avoids 3 wasted type-specific queries (TextField, SecureTextField, Button)
-		predicateBase := fmt.Sprintf("label CONTAINS[c] '%s' OR name CONTAINS[c] '%s' OR value CONTAINS[c] '%s'",
-			sel.Text, sel.Text, sel.Text)
+		predicateBase := fmt.Sprintf("label CONTAINS[c] '%s' OR value CONTAINS[c] '%s'",
+			sel.Text, sel.Text)
 		predicate := "(" + predicateBase + ")" + stateFilter
 		if elemID, err := d.client.FindElement("predicate string", predicate); err == nil && elemID != "" {
 			return d.getElementInfo(elemID)

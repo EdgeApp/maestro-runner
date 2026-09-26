@@ -430,9 +430,11 @@ func (d *Driver) findElementDirect(sel flow.Selector) (*core.ElementInfo, error)
 	// Try text using native platform strategies (fast)
 	if sel.Text != "" {
 		if d.platform == "ios" {
-			// iOS: use -ios predicate string (check label, name, and value to match page source behavior)
+			// iOS: -ios predicate string over what the element shows (label,
+			// value), as the page-source matcher does; name is the
+			// accessibility identifier, which only id: matches (#178).
 			escaped := escapeIOSPredicateString(sel.Text)
-			predicate := fmt.Sprintf(`label CONTAINS[c] "%s" OR name CONTAINS[c] "%s" OR value CONTAINS[c] "%s"`, escaped, escaped, escaped)
+			predicate := fmt.Sprintf(`label CONTAINS[c] "%s" OR value CONTAINS[c] "%s"`, escaped, escaped)
 			if elemID, err := d.client.FindElement("-ios predicate string", predicate); err == nil && elemID != "" {
 				return d.getElementInfo(elemID)
 			}
@@ -708,7 +710,7 @@ func (d *Driver) findElementForTapIOS(sel flow.Selector) (*core.ElementInfo, err
 	escaped := escapeIOSPredicateString(sel.Text)
 
 	// Step 1: Try exact match (fast path — returns Appium element ID)
-	exactPredicate := fmt.Sprintf(`label ==[c] "%s" OR name ==[c] "%s" OR value ==[c] "%s"`, escaped, escaped, escaped)
+	exactPredicate := fmt.Sprintf(`label ==[c] "%s" OR value ==[c] "%s"`, escaped, escaped)
 	if elemID, err := d.client.FindElement("-ios predicate string", exactPredicate); err == nil && elemID != "" {
 		return d.getElementInfo(elemID)
 	}
@@ -741,11 +743,11 @@ func (d *Driver) iosNativelyAbsent(predicate string) bool {
 }
 
 // iosTextContainsPredicate matches every element the page-source matcher
-// accepts for a literal text: case-insensitive contains over label, name,
-// value and placeholderValue (matchesSelector in pagesource.go).
+// accepts for a literal text: case-insensitive contains over label, value
+// and placeholderValue (matchesSelector in pagesource.go).
 func iosTextContainsPredicate(text string) string {
 	e := escapeIOSPredicateString(text)
-	return fmt.Sprintf(`label CONTAINS[c] "%s" OR name CONTAINS[c] "%s" OR value CONTAINS[c] "%s" OR placeholderValue CONTAINS[c] "%s"`, e, e, e, e)
+	return fmt.Sprintf(`label CONTAINS[c] "%s" OR value CONTAINS[c] "%s" OR placeholderValue CONTAINS[c] "%s"`, e, e, e)
 }
 
 // iosIDContainsPredicate matches every element the page-source matcher

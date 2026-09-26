@@ -177,7 +177,7 @@ func TestIOSRegexSelectorsStillUsePageSource(t *testing.T) {
 }
 
 func TestIOSContainsPredicatesMatchPageSourceMatcher(t *testing.T) {
-	if got, want := iosTextContainsPredicate(`Say "hi"`), `label CONTAINS[c] "Say \"hi\"" OR name CONTAINS[c] "Say \"hi\"" OR value CONTAINS[c] "Say \"hi\"" OR placeholderValue CONTAINS[c] "Say \"hi\""`; got != want {
+	if got, want := iosTextContainsPredicate(`Say "hi"`), `label CONTAINS[c] "Say \"hi\"" OR value CONTAINS[c] "Say \"hi\"" OR placeholderValue CONTAINS[c] "Say \"hi\""`; got != want {
 		t.Errorf("text predicate:\n got %s\nwant %s", got, want)
 	}
 	if got, want := iosIDContainsPredicate("username"), `name CONTAINS "username"`; got != want {

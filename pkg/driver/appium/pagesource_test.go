@@ -217,6 +217,9 @@ func TestFilterBySelector_iOS(t *testing.T) {
 		{"by text (label)", flow.Selector{Text: "Submit"}, 3},
 		{"by ID (name)", flow.Selector{ID: "submitBtn"}, 1},
 		{"by ID partial", flow.Selector{ID: "Btn"}, 3},
+		// Text never reaches the accessibility identifier: "btn" is only in names (#178).
+		{"text does not match identifier", flow.Selector{Text: "btn"}, 0},
+		{"text does not match identifier word", flow.Selector{Text: "order"}, 1},
 	}
 
 	for _, tt := range tests {

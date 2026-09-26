@@ -335,7 +335,9 @@ func matchesSelector(elem *ParsedElement, sel flow.Selector, platform string) bo
 	// Text matching
 	if sel.Text != "" {
 		if platform == "ios" {
-			if !matchesText(sel.Text, elem.Label, elem.Name, elem.Value, elem.PlaceholderValue) {
+			// Not elem.Name: on iOS that is the accessibility identifier,
+			// which only id: matches (#178).
+			if !matchesText(sel.Text, elem.Label, elem.Value, elem.PlaceholderValue) {
 				return false
 			}
 		} else {

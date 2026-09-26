@@ -171,12 +171,43 @@ func TestFilterBySelectorRegex(t *testing.T) {
 		t.Errorf("Expected 1 element matching 'Log.*', got %d", len(filtered))
 	}
 
-	// More complex regex
+	// A text regex reads what elements show, not their identifiers:
+	// loginButton and settingsButton are names, so only id: finds them (#178).
 	sel = flow.Selector{Text: ".*Button"}
-	filtered = FilterBySelector(elements, sel)
-	// Should match loginButton, settingsButton names
-	if len(filtered) < 2 {
-		t.Errorf("Expected at least 2 elements matching '.*Button', got %d", len(filtered))
+	if filtered = FilterBySelector(elements, sel); len(filtered) != 0 {
+		t.Errorf("text '.*Button' matched %d elements by identifier, want 0", len(filtered))
+	}
+	sel = flow.Selector{ID: ".*Button"}
+	if filtered = FilterBySelector(elements, sel); len(filtered) < 2 {
+		t.Errorf("Expected at least 2 elements with id matching '.*Button', got %d", len(filtered))
+	}
+}
+
+// A text selector never matches an element's accessibility identifier (its
+// name): `text: Open` must not find the button whose testID is open-scanner.
+// Maestro matches text against label, title, value and placeholder only.
+func TestTextSelectorIgnoresIdentifier(t *testing.T) {
+	src := `<?xml version="1.0" encoding="UTF-8"?><AppiumAUT>
+<XCUIElementTypeApplication type="XCUIElementTypeApplication" name="app" label="app" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+<XCUIElementTypeButton type="XCUIElementTypeButton" name="open-scanner" label="Scan code" enabled="true" visible="true" x="20" y="200" width="200" height="44"/>
+<XCUIElementTypeStaticText type="XCUIElementTypeStaticText" name="3 items in stock" label="3 items in stock" enabled="true" visible="true" x="20" y="100" width="200" height="20"/>
+</XCUIElementTypeApplication></AppiumAUT>`
+	elements, err := ParsePageSource(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := FilterBySelector(elements, flow.Selector{Text: "Open"}); len(got) != 0 {
+		t.Errorf("text 'Open' matched %d elements through the identifier, want 0", len(got))
+	}
+	if got := FilterBySelector(elements, flow.Selector{Text: "Scan code"}); len(got) != 1 {
+		t.Errorf("text 'Scan code' matched %d elements, want 1", len(got))
+	}
+	if got := FilterBySelector(elements, flow.Selector{ID: "open-scanner"}); len(got) != 1 {
+		t.Errorf("id 'open-scanner' matched %d elements, want 1", len(got))
+	}
+	// An element with no identifier reports its label as name, so text still finds it.
+	if got := FilterBySelector(elements, flow.Selector{Text: "items in stock"}); len(got) != 1 {
+		t.Errorf("text 'items in stock' matched %d elements, want 1", len(got))
 	}
 }
 
