@@ -50,3 +50,21 @@ func TestChecksBySnapshot(t *testing.T) {
 		t.Error("index selectors keep their own path")
 	}
 }
+
+// An anchored id matches an id with a package prefix, as in Maestro.
+func TestAnchoredID(t *testing.T) {
+	if !matchesID(`^auth\.login$`, "com.app:id/auth.login") {
+		t.Error("page source: anchored id should match after the prefix")
+	}
+	strategies, err := buildSelectors(flow.Selector{ID: `^auth\.login$`}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := strategies[len(strategies)-1].Value
+	if want := `new UiSelector().resourceIdMatches("(?:.*/)?(?:auth\.login)")`; last != want {
+		t.Errorf("last strategy = %s, want %s", last, want)
+	}
+	if core, ok := unanchored(`price\$`); ok || core != `price\$` {
+		t.Errorf("escaped $ is not an anchor: %q %v", core, ok)
+	}
+}

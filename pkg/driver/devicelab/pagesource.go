@@ -351,7 +351,9 @@ func matchesID(pattern, id string) bool {
 	if err != nil {
 		return strings.Contains(id, pattern)
 	}
-	return re.MatchString(id)
+	// Maestro also matches the id after its package prefix, so an anchored
+	// `^auth\.login$` finds "com.app:id/auth.login".
+	return re.MatchString(id) || re.MatchString(id[strings.LastIndex(id, "/")+1:])
 }
 
 // matchesText checks if pattern matches the element's text, content-desc, or hint.

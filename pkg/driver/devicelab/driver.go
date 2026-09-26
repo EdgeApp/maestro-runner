@@ -1858,6 +1858,11 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 			// full resource id like "com.app:id/inputField".
 			{`.resourceIdMatches(".*(?:` + escaped + `).*")`},
 		}
+		// An anchored id (^x$) cannot match a full "com.app:id/x" inside
+		// wildcards; Maestro also matches the part after the last "/".
+		if core, ok := unanchored(sel.ID); ok {
+			idTiers = append(idTiers, []string{`.resourceIdMatches("(?:.*/)?(?:` + escapeUIAutomatorString(core) + `)")`})
+		}
 	}
 
 	// Text — case-sensitive first, case-insensitive fallback. hintContains /
@@ -2236,4 +2241,17 @@ func (d *Driver) findVisible(sel flow.Selector, optional bool, stepTimeoutMs int
 		}
 	}
 	return nil, err
+}
+
+// unanchored strips a leading ^ and a trailing unescaped $ from an id regex,
+// reporting whether it had either.
+func unanchored(id string) (string, bool) {
+	core, anchored := id, false
+	if strings.HasPrefix(core, "^") {
+		core, anchored = core[1:], true
+	}
+	if strings.HasSuffix(core, "$") && !strings.HasSuffix(core, `\$`) {
+		core, anchored = core[:len(core)-1], true
+	}
+	return core, anchored
 }
