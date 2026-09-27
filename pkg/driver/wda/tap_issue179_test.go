@@ -307,3 +307,48 @@ func TestIDPrefersInnermostOfNestedMatches(t *testing.T) {
 		t.Errorf("picked %q, want the inner switch", info.ID)
 	}
 }
+
+// When the WDA query answers with a copy that never comes on screen (first
+// in tree order, parked off the right edge), scrollUntilVisible still finds
+// the on-screen copy through the page source instead of scrolling past it.
+func TestScrollUntilVisibleTakesOnScreenCopy(t *testing.T) {
+	var mu sync.Mutex
+	swipes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		p := r.URL.Path
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.HasSuffix(p, "/actions"):
+			swipes++
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		case strings.HasSuffix(p, "/element") && r.Method == "POST":
+			jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"ELEMENT": "hidden"}})
+		case strings.Contains(p, "/element/hidden/rect"):
+			jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"x": 414, "y": 866, "width": 102, "height": 20}})
+		case strings.HasSuffix(p, "/displayed"):
+			jsonResponse(w, map[string]interface{}{"value": false})
+		case strings.HasSuffix(p, "/source"):
+			jsonResponse(w, map[string]interface{}{"value": `<AppiumAUT><XCUIElementTypeApplication name="DDG" visible="true" x="0" y="0" width="390" height="844">
+<XCUIElementTypeLink name="Terms of Service" label="Terms of Service" visible="false" x="414" y="866" width="102" height="20"/>
+<XCUIElementTypeLink name="Terms of Service" label="Terms of Service" visible="true" x="216" y="78" width="115" height="21"/>
+</XCUIElementTypeApplication></AppiumAUT>`})
+		default:
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		}
+	}))
+	defer server.Close()
+	d := createTestDriver(server)
+
+	res := d.scrollUntilVisible(&flow.ScrollUntilVisibleStep{Element: flow.Selector{Text: "Terms of Service"}, BaseStep: flow.BaseStep{TimeoutMs: 5000}})
+	if !res.Success {
+		t.Fatalf("scrollUntilVisible failed: %s", res.Message)
+	}
+	if res.Element == nil || res.Element.Bounds.X != 216 {
+		t.Errorf("picked %+v, want the on-screen footer copy at x=216", res.Element)
+	}
+	if swipes != 0 {
+		t.Errorf("swiped %d times; the on-screen copy was already there", swipes)
+	}
+}

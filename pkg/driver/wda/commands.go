@@ -3,6 +3,7 @@ package wda
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -756,7 +757,9 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 		direction = "down"
 	}
 
-	maxScrolls := 20
+	// Like Maestro, the timeout is the budget; a scroll count caps it only
+	// when the flow sets one.
+	maxScrolls := math.MaxInt
 	if step.MaxScrolls > 0 {
 		maxScrolls = step.MaxScrolls
 	}
@@ -780,6 +783,17 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 			w, h, sizeErr := d.screenSize()
 			if sizeErr != nil || core.MeetsVisibility(info.Bounds, w, h, step.VisibilityPercentage) {
 				return successResult("Element found after scrolling", info)
+			}
+			// The WDA query returns the first match in tree order, which can
+			// be a copy that never comes on screen (DDG's home page parks a
+			// hidden "Terms of Service" off the right edge, ahead of the
+			// footer link). The page source drops out-of-bounds elements
+			// first, as Maestro does, so ask it for a match on screen.
+			if sizeErr == nil {
+				if onScreen, psErr := d.findElementByPageSourceOnce(step.Element); psErr == nil && onScreen != nil &&
+					core.MeetsVisibility(onScreen.Bounds, w, h, step.VisibilityPercentage) {
+					return successResult("Element found after scrolling", onScreen)
+				}
 			}
 		}
 
