@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -785,9 +786,12 @@ func (d *Driver) handleScrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.
 	if direction == "" {
 		direction = "down"
 	}
+	// Like Maestro, the timeout is the budget; a scroll count caps it only
+	// when the flow sets one. A fixed 20 gave up on a long page (DDG's home
+	// page footer) with half the timeout left.
 	maxScrolls := s.MaxScrolls
 	if maxScrolls <= 0 {
-		maxScrolls = 20
+		maxScrolls = math.MaxInt
 	}
 	timeout := 30 * time.Second
 	if s.TimeoutMs > 0 {
@@ -799,7 +803,7 @@ func (d *Driver) handleScrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.
 	var progress core.ScrollProgress
 
 	for i := 0; i < maxScrolls && time.Now().Before(deadline); i++ {
-		node, err := d.findElement(s.Element, true, 1000)
+		node, err := d.scrollTargetOnScreen(s.Element, s.VisibilityPercentage)
 		if err == nil && node != nil && isDisplayed(node) {
 			// A found element is not necessarily a visible one: a ScrollView
 			// item keeps a real frame while sitting below the fold, and a
@@ -834,16 +838,38 @@ func (d *Driver) handleScrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.
 			)
 		}
 
-		result := d.handleScroll(&flow.ScrollStep{Direction: direction})
+		result := d.handleScroll(&flow.ScrollStep{Direction: direction, Speed: s.Speed})
 		if !result.Success {
 			return result
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
 	return core.ErrorResult(
-		fmt.Errorf("element not found after %d scrolls", maxScrolls),
+		fmt.Errorf("element not found after scrolling"),
 		"scroll target not found",
 	)
+}
+
+// scrollTargetOnScreen finds the scroll target, preferring a match that is on
+// screen enough to count: when a page holds several copies (a hidden one
+// parked off the edge, the real one in the footer), the first in tree order
+// may never become visible, and checking only it scrolled past the real one.
+// Maestro drops out-of-bounds matches before choosing, to the same effect.
+// With no match in the snapshot it falls back to findElement's other
+// strategies.
+func (d *Driver) scrollTargetOnScreen(sel flow.Selector, visibilityPct int) (*SnapshotNode, error) {
+	nodes, err := d.snapshotMatching(sel)
+	if err == nil && len(nodes) > 0 && sel.Index == "" {
+		if w, h := d.screenDims(); w > 0 && h > 0 {
+			for i := range nodes {
+				if isDisplayed(&nodes[i]) && core.MeetsVisibility(snapshotBounds(&nodes[i]), w, h, visibilityPct) {
+					return &nodes[i], nil
+				}
+			}
+		}
+		return &nodes[0], nil
+	}
+	return d.findElement(sel, true, 1000)
 }
 
 // scrollSurfaceSignature reduces the current snapshot to a key for

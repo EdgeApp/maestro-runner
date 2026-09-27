@@ -215,3 +215,35 @@ func TestScrollUntilVisible_UnknownScreenKeepsOldBehavior(t *testing.T) {
 		t.Errorf("no scroll should happen, performed %d", g.dragCount())
 	}
 }
+
+// A page can hold two copies of the target: a hidden one parked off the
+// right edge, first in tree order, and the real one further down. Only the
+// real one ever comes on screen; checking just the first match scrolled past
+// it (DDG's home-page footer link).
+func TestScrollUntilVisible_PicksTheMatchOnScreen(t *testing.T) {
+	info := &core.PlatformInfo{ScreenWidth: 393, ScreenHeight: 852}
+	d, g := newGestureDriver(t, info, func(drags int) []SnapshotNode {
+		footerY := 1200.0 // below the fold until two scrolls
+		if drags >= 2 {
+			footerY = 78
+		}
+		return []SnapshotNode{
+			{Type: "Link", Label: "Terms of Service", Rect: SnapshotRect{X: 414, Y: 866, Width: 102, Height: 20}},
+			{Type: "Link", Label: "Terms of Service", Rect: SnapshotRect{X: 216, Y: footerY, Width: 115, Height: 21}},
+		}
+	})
+
+	res := d.executeStep(&flow.ScrollUntilVisibleStep{
+		BaseStep: flow.BaseStep{StepType: flow.StepScrollUntilVisible},
+		Element:  flow.Selector{Text: "Terms of Service"},
+	})
+	if !res.Success {
+		t.Fatalf("scrollUntilVisible failed: %s", res.Message)
+	}
+	if res.Element == nil || res.Element.Bounds.X != 216 {
+		t.Errorf("picked %+v, want the on-screen footer link at x=216", res.Element)
+	}
+	if g.dragCount() != 2 {
+		t.Errorf("scrolls = %d, want 2", g.dragCount())
+	}
+}
