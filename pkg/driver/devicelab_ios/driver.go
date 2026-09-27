@@ -221,10 +221,13 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	if d.screenMayMove && actsOnScreen(step) {
 		d.settle(defaultSettleTimeout)
 	}
-	d.screenMayMove = movesScreen(step)
-	// Waits and asserts between "tapOn field" and "inputText" keep the tap
-	// point: only a step that acts on or moves the screen starts a new one.
+	// Asserts and waits between an action and the next one neither settle
+	// nor move the screen, so they leave both records alone: an assert that
+	// passed early on a page still being pushed must not let the next tap
+	// skip its settle (a back tap sent mid-push was lost), and a wait
+	// between "tapOn field" and "inputText" keeps the tap point.
 	if actsOnScreen(step) || movesScreen(step) {
+		d.screenMayMove = movesScreen(step)
 		d.prevTap, d.lastTap = d.lastTap, nil
 	}
 	result := d.execute(step)

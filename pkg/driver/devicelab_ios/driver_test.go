@@ -17,14 +17,22 @@ func TestExecuteSettlesOnlyAfterMovingSteps(t *testing.T) {
 	d, fa, _ := newTestDriver(t, screenOf(node(1, "Button", "Go", 0, 0, 100, 40)))
 	d.Execute(&flow.AssertVisibleStep{Selector: flow.Selector{Text: "Go"}}) // no settle: first step
 	d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Go"}})         // no settle: nothing moved yet
-	d.Execute(&flow.AssertVisibleStep{Selector: flow.Selector{Text: "Go"}}) // asserts poll, never settle
-	d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Go"}})         // no settle: the assert between saw the screen
 	if n := len(fa.sent("settle")); n != 0 {
-		t.Fatalf("settles = %d, want 0 (the assert between reset it)", n)
+		t.Fatalf("settles = %d, want 0 before anything moved", n)
+	}
+	// An assert can pass on a page that is still being pushed; it is no
+	// proof the screen is still, so the next tap still settles.
+	d.Execute(&flow.AssertVisibleStep{Selector: flow.Selector{Text: "Go"}})
+	if n := len(fa.sent("settle")); n != 0 {
+		t.Fatalf("settles = %d, want 0: asserts poll, never settle", n)
 	}
 	d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Go"}})
 	if n := len(fa.sent("settle")); n != 1 {
-		t.Fatalf("settles = %d, want 1", n)
+		t.Fatalf("settles = %d, want 1 (the tap after tap+assert settles)", n)
+	}
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Go"}})
+	if n := len(fa.sent("settle")); n != 2 {
+		t.Fatalf("settles = %d, want 2", n)
 	}
 }
 
