@@ -2,6 +2,8 @@ package wda
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -51,9 +53,9 @@ type Driver struct {
 	appDeathFirstAt  time.Time
 	crashAbortReason string
 
-	// The element the last step tapped, while the next step may still need
-	// to wait for that tap's UI to settle
-	lastTapID string
+	// The last step could have set the screen moving (a tap, a swipe, a
+	// scroll), so the next action waits for it to settle first
+	screenMayMove bool
 }
 
 // Crash-loop detection thresholds.
@@ -224,14 +226,17 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 		}
 	}
 
-	// An action right after a tap waits for that tap's UI to settle. WDA's
-	// own wait for quiescence is off (it crashed XCTest), so a second tap
-	// went out tens of milliseconds after the first, before the push the
-	// first one started, and landed on the screen being left (#179).
-	if d.lastTapID != "" && actsOnScreen(step) {
-		d.settleAfterTap()
+	// An action right after one that moved the screen (a tap, a swipe, a
+	// scroll) waits for the screen to settle. WDA's own wait for quiescence
+	// is off (it crashed XCTest), so a tap went out while the previous one's
+	// push was still running (#179), while a list was still coasting after a
+	// scroll (iOS takes that tap as "stop scrolling"), or while a menu was
+	// still animating in — and WDA reported success for a tap that did
+	// nothing. Maestro settles before every tap in the same way.
+	if d.screenMayMove && actsOnScreen(step) {
+		d.settleScreen()
 	}
-	d.lastTapID = ""
+	d.screenMayMove = movesScreen(step)
 
 	var result *core.CommandResult
 	switch s := step.(type) {
@@ -359,54 +364,58 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 }
 
 // actsOnScreen reports whether a step acts on what is on screen, so it must
-// not run while the previous tap's UI is still changing.
+// not run while the screen is still changing. Asserts are not in it: they
+// poll until their own timeout anyway.
 func actsOnScreen(step flow.Step) bool {
 	switch step.(type) {
 	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep,
-		*flow.SwipeStep, *flow.ScrollStep, *flow.BackStep, *flow.PressKeyStep, *flow.InputTextStep:
+		*flow.DragAndDropStep, *flow.SwipeStep, *flow.ScrollStep, *flow.ScrollUntilVisibleStep,
+		*flow.BackStep, *flow.PressKeyStep, *flow.InputTextStep, *flow.CopyTextFromStep:
 		return true
 	}
 	return false
 }
 
-// Settle limits after a tap: how long a screen change may take to show, and
-// how long it may take to finish.
-const (
-	tapEffectWait   = 400 * time.Millisecond
-	tapSettleLimit  = 1500 * time.Millisecond
-	tapSettleSample = 50 * time.Millisecond
-)
+// movesScreen reports whether a step can set the screen moving, so the next
+// action has to wait for it to settle.
+func movesScreen(step flow.Step) bool {
+	switch step.(type) {
+	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep,
+		*flow.DragAndDropStep, *flow.SwipeStep, *flow.ScrollStep, *flow.ScrollUntilVisibleStep,
+		*flow.BackStep, *flow.PressKeyStep, *flow.InputTextStep, *flow.LaunchAppStep:
+		return true
+	}
+	return false
+}
 
-// settleAfterTap waits for the UI the last tap started to finish, watching
-// the tapped element: if it moves or goes away a transition is under way,
-// and it waits until the element is gone or at rest. An element that has
-// not moved within tapEffectWait means the tap changed nothing there. Each
-// look is one rect call, far cheaper than comparing page sources.
-func (d *Driver) settleAfterTap() {
+// screenSettleLimit caps a settle, as Maestro's iOS driver caps its own at 3s:
+// a screen that never stops changing (a video, a spinner) costs this, no more.
+var screenSettleLimit = 3 * time.Second
+
+// settleScreen waits until two screenshots taken back to back are identical,
+// Maestro's iOS test for a static screen. Each screenshot takes as long as it
+// takes, so there is no fixed sleep: a still screen settles after two. It
+// returns the last screenshot's hash (empty when none could be taken), which
+// callers can compare to tell whether the screen moved at all.
+func (d *Driver) settleScreen() string {
 	start := time.Now()
-	moving := false
-	var prev core.Bounds
-	for first := true; time.Since(start) < tapSettleLimit; first = false {
-		x, y, w, h, err := d.client.ElementRect(d.lastTapID)
-		if err != nil {
-			return // gone: the screen it was on has been replaced
+	prev := ""
+	for {
+		shot, err := d.client.Screenshot()
+		if err != nil || len(shot) == 0 {
+			return prev
 		}
-		cur := core.Bounds{X: x, Y: y, Width: w, Height: h}
-		// Compare readings taken after the tap with each other: the bounds
-		// read before the click can differ from the first one after it
-		// without anything moving, which read as "moved, then at rest".
-		switch {
-		case !first && cur != prev:
-			moving = true
-		case moving:
-			return // moved and came to rest
-		case time.Since(start) >= tapEffectWait:
-			return // never moved: nothing to wait for
+		sum := sha256.Sum256(shot)
+		cur := hex.EncodeToString(sum[:])
+		if cur == prev {
+			return cur
 		}
 		prev = cur
-		time.Sleep(tapSettleSample)
+		if time.Since(start) >= screenSettleLimit {
+			logger.Debug("[wda] screen still changing after %v — continuing", screenSettleLimit)
+			return cur
+		}
 	}
-	logger.Debug("[wda] screen still changing %v after the last tap — continuing", tapSettleLimit)
 }
 
 // trackCrashLoop counts consecutive "app died on launch" failures and trips a

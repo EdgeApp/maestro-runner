@@ -133,7 +133,7 @@ func TestScrollUntilVisible_KeepsScrollingWhenPartiallyVisible(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		path := r.URL.Path
 		switch {
-		case strings.Contains(path, "/dragfromtoforduration"):
+		case strings.Contains(path, "/actions"):
 			scrolls++
 			jsonResponse(w, map[string]interface{}{"status": 0})
 		case strings.HasSuffix(path, "/source"):

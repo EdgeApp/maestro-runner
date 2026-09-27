@@ -28,8 +28,8 @@ func jsonResponse(w http.ResponseWriter, data interface{}) {
 func TestNewClient(t *testing.T) {
 	client := NewClient(8100)
 
-	if client.baseURL != "http://localhost:8100" {
-		t.Errorf("Expected baseURL 'http://localhost:8100', got '%s'", client.baseURL)
+	if client.baseURL != "http://127.0.0.1:8100" {
+		t.Errorf("Expected baseURL 'http://127.0.0.1:8100', got '%s'", client.baseURL)
 	}
 
 	if client.httpClient == nil {
@@ -399,8 +399,8 @@ func TestLongPress(t *testing.T) {
 // TestSwipe tests swipe action
 func TestSwipe(t *testing.T) {
 	server := mockWDAServer(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/wda/dragfromtoforduration") {
-			t.Errorf("Expected /wda/dragfromtoforduration, got %s", r.URL.Path)
+		if !strings.Contains(r.URL.Path, "/actions") {
+			t.Errorf("Expected /actions, got %s", r.URL.Path)
 		}
 		jsonResponse(w, map[string]interface{}{"status": 0})
 	})

@@ -1,12 +1,16 @@
 package wda
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
@@ -16,7 +20,7 @@ import (
 // element; it is not sent as a backspace (#179).
 func TestTapOnKeyNamedButtonTapsElement(t *testing.T) {
 	var mu sync.Mutex
-	var keys, clicks int
+	var keys, taps, clicks int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		mu.Lock()
@@ -25,6 +29,9 @@ func TestTapOnKeyNamedButtonTapsElement(t *testing.T) {
 		switch {
 		case strings.Contains(p, "/wda/keys"):
 			keys++
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		case strings.HasSuffix(p, "/wda/tap"):
+			taps++
 			jsonResponse(w, map[string]interface{}{"status": 0})
 		case strings.HasSuffix(p, "/click"):
 			clicks++
@@ -55,8 +62,8 @@ func TestTapOnKeyNamedButtonTapsElement(t *testing.T) {
 	if keys != 0 {
 		t.Errorf("sent %d key presses; the Delete button should have been tapped", keys)
 	}
-	if clicks != 1 {
-		t.Errorf("clicks = %d, want 1", clicks)
+	if taps != 1 || clicks != 0 {
+		t.Errorf("taps = %d, clicks = %d; want one coordinate tap and no element click", taps, clicks)
 	}
 }
 
@@ -110,18 +117,20 @@ func TestTapPointClipsToScreen(t *testing.T) {
 	}
 }
 
-// settleAfterTap waits while the tapped element moves and stops when it
-// comes to rest or goes away; an element that never moves costs at most
-// tapEffectWait.
-func TestSettleAfterTap(t *testing.T) {
+// settleScreen returns once two back-to-back screenshots are identical, and
+// gives up at screenSettleLimit on a screen that keeps changing.
+func TestSettleScreen(t *testing.T) {
+	old := screenSettleLimit
+	screenSettleLimit = 300 * time.Millisecond
+	defer func() { screenSettleLimit = old }()
 	for _, tc := range []struct {
-		name   string
-		xs     []int // successive x positions; -1 = element gone
-		minCal int
+		name      string
+		shots     []string // successive screenshots; the last repeats
+		wantCalls int      // 0 = until the limit
 	}{
-		{"push slides out then rests", []int{10, 10, 0, -40, -80, -120, -120}, 7},
-		{"gone mid-push", []int{10, 0, -1}, 3},
-		{"never moves", []int{10}, 2},
+		{"still screen", []string{"a"}, 2},
+		{"moves then rests", []string{"a", "b", "c", "c"}, 4},
+		{"never rests", nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -132,26 +141,138 @@ func TestSettleAfterTap(t *testing.T) {
 				i := calls
 				calls++
 				mu.Unlock()
-				if i >= len(tc.xs) {
-					i = len(tc.xs) - 1
+				shot := fmt.Sprintf("frame-%d", i) // a new picture every time
+				if tc.shots != nil {
+					shot = tc.shots[min(i, len(tc.shots)-1)]
 				}
-				if tc.xs[i] == -1 {
-					w.WriteHeader(http.StatusNotFound)
-					jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"error": "stale element reference"}})
-					return
-				}
-				jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"x": tc.xs[i], "y": 200, "width": 100, "height": 44}})
+				jsonResponse(w, map[string]interface{}{"value": base64.StdEncoding.EncodeToString([]byte(shot))})
 			}))
 			defer server.Close()
 			d := createTestDriver(server)
-			d.lastTapID = "tapped"
-			d.settleAfterTap()
-			if calls < tc.minCal {
-				t.Errorf("rect reads = %d, want at least %d", calls, tc.minCal)
+			start := time.Now()
+			if sig := d.settleScreen(); sig == "" {
+				t.Error("no signature returned")
 			}
-			if calls > 40 {
-				t.Errorf("rect reads = %d: did not stop", calls)
+			if tc.wantCalls > 0 && calls != tc.wantCalls {
+				t.Errorf("screenshots = %d, want %d", calls, tc.wantCalls)
+			}
+			if tc.wantCalls == 0 && time.Since(start) > 2*screenSettleLimit {
+				t.Errorf("did not stop at the limit: %v", time.Since(start))
 			}
 		})
 	}
+}
+
+// A step after one that can move the screen waits for it to settle; an
+// assert, or a step after one that moves nothing, does not.
+func TestExecuteSettlesOnlyAfterMovingStep(t *testing.T) {
+	var mu sync.Mutex
+	shots := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/screenshot") {
+			mu.Lock()
+			shots++
+			mu.Unlock()
+			jsonResponse(w, map[string]interface{}{"value": base64.StdEncoding.EncodeToString([]byte("same"))})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	d := createTestDriver(server)
+
+	d.Execute(&flow.SwipeStep{Direction: "up"})
+	if shots != 0 {
+		t.Fatalf("first step settled (%d screenshots); nothing moved before it", shots)
+	}
+	d.Execute(&flow.SetClipboardStep{Text: "x"}) // does not act on the screen
+	if shots != 0 {
+		t.Fatalf("a non-acting step settled (%d screenshots)", shots)
+	}
+	d.Execute(&flow.SwipeStep{Direction: "up"}) // previous step moved nothing
+	if shots != 0 {
+		t.Fatalf("settled after a step that moves nothing (%d screenshots)", shots)
+	}
+	d.Execute(&flow.SwipeStep{Direction: "up"}) // previous step was a swipe
+	if shots != 2 {
+		t.Errorf("screenshots = %d, want 2 (one settle after the swipe)", shots)
+	}
+}
+
+// A swipe is a touch that moves at once — no stationary hold at the start,
+// which iOS takes as a tap on the row under the finger.
+func TestSwipeHasNoHoldBeforeMove(t *testing.T) {
+	var body string
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		paths = append(paths, r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/actions") {
+			b, _ := io.ReadAll(r.Body)
+			body = string(b)
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	d := createTestDriver(server)
+
+	if res := d.scroll(&flow.ScrollStep{Direction: "down"}); !res.Success {
+		t.Fatalf("scroll failed: %s", res.Message)
+	}
+	for _, p := range paths {
+		if strings.Contains(p, "dragfromtoforduration") {
+			t.Fatalf("scroll used %s, which holds before moving", p)
+		}
+	}
+	var payload struct {
+		Actions []struct {
+			Actions []map[string]interface{} `json:"actions"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil || len(payload.Actions) != 1 {
+		t.Fatalf("bad actions body %q: %v", body, err)
+	}
+	seq := payload.Actions[0].Actions
+	var kinds []string
+	for _, a := range seq {
+		kinds = append(kinds, a["type"].(string))
+	}
+	if got := strings.Join(kinds, ","); got != "pointerMove,pointerDown,pointerMove,pause,pointerUp" {
+		t.Fatalf("sequence = %s", got)
+	}
+	if seq[2]["duration"].(float64) != swipeMoveMs {
+		t.Errorf("move duration = %v, want %d: the move must start right after the touch", seq[2]["duration"], swipeMoveMs)
+	}
+	// Scroll down swipes up from the centre to 10% from the top (390x844 screen).
+	if seq[0]["y"].(float64) != 422 || seq[2]["y"].(float64) != 84.4 {
+		t.Errorf("from y=%v to y=%v, want 422 to 84.4", seq[0]["y"], seq[2]["y"])
+	}
+}
+
+// swipePayload reads a W3C /actions swipe body back into the fields the
+// swipe tests check: start, end, and the rest before lift (seconds).
+func swipePayload(body []byte) map[string]interface{} {
+	var p struct {
+		Actions []struct {
+			Actions []map[string]interface{} `json:"actions"`
+		} `json:"actions"`
+	}
+	out := map[string]interface{}{}
+	if json.Unmarshal(body, &p) != nil || len(p.Actions) == 0 || len(p.Actions[0].Actions) < 5 {
+		return out
+	}
+	seq := p.Actions[0].Actions
+	out["fromX"], out["fromY"] = seq[0]["x"], seq[0]["y"]
+	out["toX"], out["toY"] = seq[2]["x"], seq[2]["y"]
+	if ms, ok := seq[3]["duration"].(float64); ok {
+		out["duration"] = ms / 1000
+	}
+	return out
+}
+
+// swipeBody re-encodes a W3C /actions swipe body in the flat shape.
+func swipeBody(body []byte) []byte {
+	b, _ := json.Marshal(swipePayload(body))
+	return b
 }
