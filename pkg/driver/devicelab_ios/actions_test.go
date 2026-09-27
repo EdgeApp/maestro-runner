@@ -508,3 +508,42 @@ func TestAlert(t *testing.T) {
 		t.Fatalf("res = %+v", res)
 	}
 }
+
+// A tap that did not take focus: the agent answers NO_FOCUS, and inputText
+// taps the previous step's point again and types once more. Without a
+// previous tap it fails clearly instead of passing with an empty field.
+func TestInputTextRetapsWhenNothingHasFocus(t *testing.T) {
+	field := node(1, "textField", "Username", 20, 100, 360, 44)
+	typed := 0
+	handler := func(cmd string, a Args) (*Response, error) {
+		switch cmd {
+		case "find", "snapshot":
+			return tree(field), nil
+		case "type":
+			typed++
+			if typed == 1 {
+				return nil, &AgentError{Code: "NO_FOCUS", Message: "no field has keyboard focus"}
+			}
+		}
+		return ok(&Payload{}), nil
+	}
+	d, f, _ := newTestDriver(t, handler)
+	if r := d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Username"}}); !r.Success {
+		t.Fatalf("tap failed: %s", r.Message)
+	}
+	if r := d.Execute(&flow.InputTextStep{Text: "a"}); !r.Success {
+		t.Fatalf("inputText failed: %s", r.Message)
+	}
+	if got := len(f.sent("act")); got != 2 {
+		t.Errorf("taps = %d, want 2 (the step's tap and one re-tap)", got)
+	}
+	if typed != 2 {
+		t.Errorf("type calls = %d, want 2", typed)
+	}
+
+	typed = 0
+	d2, _, _ := newTestDriver(t, handler)
+	if r := d2.Execute(&flow.InputTextStep{Text: "a"}); r.Success {
+		t.Error("inputText with nothing focused and no previous tap should fail")
+	}
+}

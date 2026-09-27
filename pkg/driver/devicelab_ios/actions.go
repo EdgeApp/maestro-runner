@@ -9,6 +9,7 @@ import (
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
 // ---------- geometry ----------
@@ -86,11 +87,19 @@ func (d *Driver) tapSelector(sel flow.Selector, optional bool, timeoutMs int, ki
 		}
 		extra = &Args{HoldMs: f64(ms)}
 	}
+	logger.Debug("[devicelab-ios] %s %s → %s %q at (%.0f,%.0f) bounds %v", kind, describe(sel),
+		node.Type, firstNonEmpty(node.Label, node.Value, node.Placeholder, node.ID), x, y, bounds(*node))
 	if err := d.act(kind, x, y, extra); err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("%s failed: %v", kind, err))
 	}
+	if kind == "tap" {
+		d.lastTap = &tapAt{x: x, y: y}
+	}
 	return core.SuccessResult(fmt.Sprintf("%s on %s", kind, describe(sel)), toElementInfo(node))
 }
+
+// tapAt is a point a step tapped.
+type tapAt struct{ x, y float64 }
 
 // tapRelative taps a point given relative to the element ("50%, 90%").
 func (d *Driver) tapRelative(sel flow.Selector, point string, optional bool, timeoutMs int, kind string, holdMs int) *core.CommandResult {
@@ -462,6 +471,16 @@ func (d *Driver) inputText(s *flow.InputTextStep) *core.CommandResult {
 		return core.SuccessResult("nothing to type", nil)
 	}
 	resp, err := d.call("type", &Args{Text: s.Text, Speed: d.typingSpeed})
+	// Nothing had focus. When the step before tapped something (the usual
+	// "tapOn field, inputText" pair), that tap did not take: tap the same
+	// point once more and type again.
+	if isNoFocus(err) && d.prevTap != nil {
+		logger.Debug("[devicelab-ios] inputText: no field has focus; re-tapping (%.0f,%.0f)", d.prevTap.x, d.prevTap.y)
+		if terr := d.act("tap", d.prevTap.x, d.prevTap.y, nil); terr == nil {
+			d.settle(defaultSettleTimeout)
+			resp, err = d.call("type", &Args{Text: s.Text, Speed: d.typingSpeed})
+		}
+	}
 	if err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("inputText failed: %v", err))
 	}
@@ -604,4 +623,10 @@ func (d *Driver) alert(action string, timeoutMs int) *core.CommandResult {
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+// isNoFocus reports the agent's "nothing has keyboard focus" answer to type.
+func isNoFocus(err error) bool {
+	var ae *AgentError
+	return errors.As(err, &ae) && ae.Code == "NO_FOCUS"
 }

@@ -43,6 +43,10 @@ type Driver struct {
 	// settles first (asserts poll on their own and do not).
 	screenMayMove bool
 
+	// lastTap is where this step tapped; prevTap is where the step before
+	// it did, so inputText can re-tap a field whose focus did not take.
+	lastTap, prevTap *tapAt
+
 	mu         sync.Mutex
 	stagedApps map[string]stagedApp
 	recording  *simulator.Recording
@@ -218,6 +222,7 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 		d.settle(defaultSettleTimeout)
 	}
 	d.screenMayMove = movesScreen(step)
+	d.prevTap, d.lastTap = d.lastTap, nil
 	result := d.execute(step)
 	if result == nil {
 		result = core.ErrorResult(fmt.Errorf("no result"), "step produced no result")
