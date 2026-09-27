@@ -278,6 +278,7 @@ func (d *Driver) scrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.Comman
 			if node, perr := pick(sc, s.Element); perr == nil {
 				w, h := d.screenSize(sc)
 				b := bounds(*node)
+				logger.Debug("[devicelab-ios] scrollUntilVisible round %d: %s at %v on %dx%d", i, describe(s.Element), b, w, h)
 				if s.CenterElement && core.VisibleFraction(b, w, h) > 0.1 && centerScrolls <= maxCenterScrolls {
 					if core.NearScreenCenter(b, w, h, direction) {
 						return core.SuccessResult("element centred after scrolling", toElementInfo(node))
