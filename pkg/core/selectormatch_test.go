@@ -11,16 +11,18 @@ func TestMatchSelectorText(t *testing.T) {
 		values  []string
 		want    bool
 	}{
-		{"sign in", []string{"Sign In"}, true},                           // plain: case-insensitive substring
-		{"Sign", []string{"Please Sign In"}, true},                       // plain: substring
+		{"sign in", []string{"Sign In"}, true},                           // plain: case-insensitive, whole
+		{"Sign", []string{"Please Sign In"}, false},                      // plain: never a substring (Maestro)
+		{"Example", []string{"Examples"}, false},                         // plain: whole value only
 		{"line two", []string{"line\ntwo"}, true},                        // newline read as space
 		{"Passwords.*", []string{"Passwords"}, true},                     // regex: whole value
 		{"Passwords.*", []string{"Import Passwords from Google"}, false}, // regex: not a substring
 		{"(let's get started!|x)", []string{"Let's get started!"}, true}, // regex: case-insensitive
 		{"DDG.", []string{"Not DDG."}, false},                            // dotted plain: whole match only
 		{"Protections.activated!", []string{"Protections activated!"}, true},
-		{"a.*b", []string{"a\nb"}, true},       // dot matches newline
-		{"([", []string{"has ([ in it"}, true}, // invalid regex falls back to substring
+		{"a.*b", []string{"a\nb"}, true},        // dot matches newline
+		{"([", []string{"has ([ in it"}, false}, // invalid regex: literal, whole
+		{"([", []string{"(["}, true},
 		{"", []string{"x"}, false},
 		{"x", []string{""}, false},
 	}

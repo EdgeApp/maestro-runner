@@ -426,7 +426,7 @@ func TestClipboard(t *testing.T) {
 	n := node(1, "StaticText", "", 0, 0, 100, 20)
 	n.Value = "Order #42"
 	d, fa, sl := newTestDriver(t, screenOf(n))
-	res := d.Execute(&flow.CopyTextFromStep{Selector: flow.Selector{Text: "Order"}})
+	res := d.Execute(&flow.CopyTextFromStep{Selector: flow.Selector{Text: "Order.*"}}) // text is a whole match, as in Maestro
 	if !res.Success || res.Data != "Order #42" {
 		t.Fatalf("copy = %+v", res)
 	}

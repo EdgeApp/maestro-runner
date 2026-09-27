@@ -12,9 +12,10 @@ import (
 // Text: a pattern with regex syntax must match a whole value, case-insensitive,
 // with "." matching newlines (Maestro compiles with IGNORE_CASE and
 // DOT_MATCHES_ALL and calls Regex.matches). A value also matches with its line
-// breaks read as spaces. A plain pattern is a case-insensitive substring match,
-// as the other maestro-runner drivers do today; a plain pattern with a dot is a
-// regex to Maestro ("Protections.activated!") and is matched whole.
+// breaks read as spaces. Every pattern is such a regex, plain text included, so
+// "Example" does not match "Examples" (the substring match the other
+// maestro-runner drivers still use is the open #161 question). An invalid
+// regex is compared as literal text, whole and case-insensitive.
 //
 // ID: a case-insensitive regex, matched anywhere, also against the part after a
 // "/" package prefix; an invalid regex falls back to a substring.
@@ -24,12 +25,9 @@ func MatchSelectorText(pattern string, values ...string) bool {
 	if pattern == "" {
 		return false
 	}
-	if !LooksLikeRegex(pattern) && !strings.Contains(pattern, ".") {
-		return anyContains(pattern, values)
-	}
 	re, err := regexp.Compile(`(?is)\A(?:` + pattern + `)\z`)
 	if err != nil {
-		return anyContains(pattern, values)
+		re = regexp.MustCompile(`(?is)\A` + regexp.QuoteMeta(pattern) + `\z`)
 	}
 	for _, v := range values {
 		if v == "" {
@@ -175,15 +173,4 @@ func skipTo(s string, i int, end byte) int {
 		return i + j
 	}
 	return len(s) - 1
-}
-
-func anyContains(pattern string, values []string) bool {
-	p := strings.ToLower(pattern)
-	for _, v := range values {
-		l := strings.ToLower(v)
-		if strings.Contains(l, p) || strings.Contains(strings.ReplaceAll(l, "\n", " "), p) {
-			return true
-		}
-	}
-	return false
 }
