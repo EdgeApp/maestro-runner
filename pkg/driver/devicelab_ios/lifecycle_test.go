@@ -335,3 +335,18 @@ func TestLaunchEnvAndArgs(t *testing.T) {
 		t.Fatal("nil args")
 	}
 }
+
+// Launch arguments follow Maestro's iOS rule: a boolean keeps its key
+// as written, another value gets a "-" prefix unless it already has one.
+func TestFlattenArgumentsLikeMaestro(t *testing.T) {
+	got := flattenArguments(map[string]any{
+		"autoclear-ui-test": true,
+		"cartValue":         3,
+		"-cartColor":        "Orange",
+		"isOnboarding":      "true", // a string, e.g. from ${ENV}
+	})
+	want := []string{"-cartColor", "Orange", "autoclear-ui-test", "true", "-cartValue", "3", "-isOnboarding", "true"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}

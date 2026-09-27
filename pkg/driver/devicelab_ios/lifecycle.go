@@ -109,8 +109,13 @@ func launchEnv(appEnv map[string]string) []string {
 	return env
 }
 
-// flattenArguments turns launch arguments into `-key value` pairs, sorted so
-// the command line is stable.
+// flattenArguments turns launch arguments into a command line the way
+// Maestro's iOS driver does (IOSLaunchArguments.kt): a boolean keeps its key
+// as written (`autoclear-ui-test true`), any other value gets a `-` prefix
+// unless it has one (`-cartValue 3`, a UserDefaults argument). Apps test
+// flags with ProcessInfo.arguments.contains("key"); a dash on a boolean key
+// hid it (DDG's autoclear-ui-test never took effect). Keys are sorted so the
+// command line is stable.
 func flattenArguments(args map[string]any) []string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
@@ -119,7 +124,12 @@ func flattenArguments(args map[string]any) []string {
 	sort.Strings(keys)
 	out := make([]string, 0, len(args)*2)
 	for _, k := range keys {
-		out = append(out, "-"+k, fmt.Sprintf("%v", args[k]))
+		v := args[k]
+		key := k
+		if _, isBool := v.(bool); !isBool && !strings.HasPrefix(k, "-") {
+			key = "-" + k
+		}
+		out = append(out, key, fmt.Sprintf("%v", v))
 	}
 	return out
 }
