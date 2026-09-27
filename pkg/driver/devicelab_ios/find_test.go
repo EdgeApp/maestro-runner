@@ -192,3 +192,41 @@ func TestIndexAppliesToInnermostMatches(t *testing.T) {
 		t.Errorf("index 1 picked node %d, want the next innermost match (3)", got.I)
 	}
 }
+
+func TestSiblingInsideAnotherIsNotItsChild(t *testing.T) {
+	field := node(27, "TextField", "", 36, 191, 321, 21)
+	field.P, field.ID = 25, "Field_PasswordName"
+	icon := node(28, "Image", "", 341, 194, 16, 16)
+	icon.P, icon.ID = 25, "Field_PasswordName"
+	sc := &screen{nodes: []Node{field, icon}, width: 393, height: 852}
+	got, err := pick(sc, flow.Selector{ID: "Field_PasswordName"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.I != 27 {
+		t.Errorf("picked node %d, want the text field (27), first in tree order", got.I)
+	}
+}
+
+func TestMayContain(t *testing.T) {
+	parent := node(5, "Cell", "", 0, 0, 100, 100)
+	child := node(6, "Button", "", 10, 10, 20, 20)
+	child.P = 5
+	grandchild := node(9, "Image", "", 12, 12, 5, 5)
+	grandchild.P = 7
+	later := node(20, "Other", "", 0, 0, 100, 100)
+	for _, c := range []struct {
+		name         string
+		outer, inner Node
+		want         bool
+	}{
+		{"direct parent", parent, child, true},
+		{"deeper descendant by bounds", parent, grandchild, true},
+		{"later in tree order", later, child, false},
+		{"child does not contain parent", child, parent, false},
+	} {
+		if got := mayContain(c.outer, c.inner); got != c.want {
+			t.Errorf("%s: mayContain = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

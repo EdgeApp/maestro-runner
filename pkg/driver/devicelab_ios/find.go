@@ -416,9 +416,25 @@ func innermost(matches []Node) []Node {
 // different frame, i.e. is an ancestor Maestro's deepest-match rule drops.
 func containsOther(matches []Node, i int) bool {
 	for j, o := range matches {
-		if i != j && contains(matches[i], o) && !sameFrame(matches[i], o) {
+		if i != j && mayContain(matches[i], o) && !sameFrame(matches[i], o) {
 			return true
 		}
 	}
 	return false
+}
+
+// mayContain reports whether outer can be an ancestor of inner. Maestro's rule
+// is tree ancestry, and a find returns candidates only, so the tree order
+// (parents before children) rules out what it can and bounds decide the rest.
+// A sibling drawn inside another is not its child: DDG's password Title field
+// and the 16pt icon laid over it share an id, and bounds alone dropped the
+// field for the icon, which takes no focus.
+func mayContain(outer, inner Node) bool {
+	if inner.P == outer.I && outer.I != inner.I {
+		return true
+	}
+	if outer.I > inner.I || (inner.P >= 0 && inner.P == outer.P) {
+		return false
+	}
+	return contains(outer, inner)
 }
