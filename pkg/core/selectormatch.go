@@ -64,14 +64,18 @@ func MatchSelectorTextExactCase(pattern string, values ...string) bool {
 	return false
 }
 
-// MatchSelectorID reports whether an id selector matches identifier.
+// MatchSelectorID reports whether an id selector matches identifier, as
+// Maestro's idMatches does: a case-insensitive regex over the whole id, or
+// over the part after its last '/'. An invalid regex matches literally. A
+// substring match let `id: Field_Password` hit DDG's Field_PasswordName and
+// type the password into the title.
 func MatchSelectorID(pattern, identifier string) bool {
 	if pattern == "" || identifier == "" {
 		return false
 	}
-	re, err := regexp.Compile("(?i)" + pattern)
+	re, err := regexp.Compile(`(?is)\A(?:` + pattern + `)\z`)
 	if err != nil {
-		return strings.Contains(strings.ToLower(identifier), strings.ToLower(pattern))
+		re = regexp.MustCompile(`(?is)\A` + regexp.QuoteMeta(pattern) + `\z`)
 	}
 	return re.MatchString(identifier) || re.MatchString(identifier[strings.LastIndex(identifier, "/")+1:])
 }

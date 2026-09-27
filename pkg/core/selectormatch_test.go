@@ -55,8 +55,13 @@ func TestMatchSelectorID(t *testing.T) {
 	}{
 		{"Flatlist", "FlatList", true},
 		{`^auth\.login$`, "com.app:id/auth.login", true},
-		{"login", "login_button", true},
-		{"([", "a([b", true},
+		{"login", "login_button", false},
+		{"login.*", "login_button", true},
+		{"Field_Password", "Field_PasswordName", false},
+		{"field_password", "Field_Password", true},
+		{"login_button", "com.app:id/login_button", true},
+		{"([", "([", true},
+		{"([", "a([b", false},
 		{"x", "", false},
 		{"", "x", false},
 	}
