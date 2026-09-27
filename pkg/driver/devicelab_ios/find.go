@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
+
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
 )
@@ -72,6 +74,8 @@ func (d *Driver) findElement(sel flow.Selector, optional bool, timeoutMs int) (*
 		sc, err := d.lookup(sel, attempt > 0)
 		if err == nil {
 			if node, merr := pick(sc, sel); merr == nil {
+				logger.Debug("[devicelab-ios] found %s → %s %q vis=%.2f bounds %v (attempt %d)", describe(sel),
+					node.Type, firstNonEmpty(node.Label, node.Value, node.Placeholder, node.ID), node.Vis, bounds(*node), attempt)
 				return node, sc, nil
 			} else {
 				lastErr = merr
