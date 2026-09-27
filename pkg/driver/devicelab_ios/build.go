@@ -147,6 +147,16 @@ func ensureBuiltFrom(ctx context.Context, simulatorUDID, sourcePath string) (str
 	if err := os.MkdirAll(filepath.Join(cacheDir, "logs"), 0o755); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
+	// Parallel runs on simulators of one iOS version share this slot: without
+	// the lock they build into one derived-data directory at once.
+	unlock, err := lockFile(cacheDir + ".lock")
+	if err != nil {
+		return "", fmt.Errorf("lock build cache: %w", err)
+	}
+	defer unlock()
+	if _, err := findXctestrun(cacheDir); err == nil {
+		return cacheDir, nil // built while this run waited for the lock
+	}
 
 	fmt.Println("\n  ⏳ Building devicelab-ios-runner for the first time...")
 	fmt.Println("     ~30-60s on Apple Silicon. Subsequent runs reuse the cache.")

@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -250,8 +253,12 @@ func Setup(ctx context.Context, opts SetupOptions) (*Client, *RunnerHandle, erro
 	}
 
 	hostAppPath := filepath.Join(opts.ArtifactsDir, "Build/Products/Debug-iphonesimulator/DevicelabIOSRunner.app")
-	if err := simctlInstall(ctx, opts.SimulatorUDID, hostAppPath); err != nil {
-		return nil, nil, fmt.Errorf("install host app: %w", err)
+	// With the same build already on the simulator, reinstalling costs a
+	// second or two on every start for nothing.
+	if !hostAppInstalled(opts.SimulatorUDID, opts.HostBundleID, hostAppPath) {
+		if err := simctlInstall(ctx, opts.SimulatorUDID, hostAppPath); err != nil {
+			return nil, nil, fmt.Errorf("install host app: %w", err)
+		}
 	}
 
 	var lastErr error
@@ -329,7 +336,11 @@ func startOnce(ctx context.Context, opts SetupOptions, xctestrun, logPath string
 	if err != nil {
 		return nil, nil, fmt.Errorf("pick port: %w", err)
 	}
-	if err := injectPortIntoXctestrun(xctestrun, port); err != nil {
+	simXctestrun, err := xctestrunForSimulator(xctestrun, opts.SimulatorUDID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prepare xctestrun: %w", err)
+	}
+	if err := injectPortIntoXctestrun(simXctestrun, port); err != nil {
 		return nil, nil, fmt.Errorf("inject port: %w", err)
 	}
 
@@ -343,12 +354,7 @@ func startOnce(ctx context.Context, opts SetupOptions, xctestrun, logPath string
 		"platform=iOS Simulator,arch=%s,id=%s",
 		simulator.XcodebuildArch(runtime.GOARCH), opts.SimulatorUDID,
 	)
-	cmd := exec.Command(
-		"xcodebuild",
-		"test-without-building",
-		"-xctestrun", xctestrun,
-		"-destination", destination,
-	)
+	cmd := exec.Command("xcodebuild", testWithoutBuildingArgs(simXctestrun, destination, xcodeMajorVersion())...)
 	cmd.Stdout = opts.Stdout
 	cmd.Stderr = opts.Stderr
 	setProcessGroup(cmd)
@@ -412,10 +418,70 @@ func findXctestrun(artifactsDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no .xctestrun found under %s", pattern)
+	for _, m := range matches {
+		if !strings.HasPrefix(filepath.Base(m), simXctestrunPrefix) {
+			return m, nil
+		}
 	}
-	return matches[0], nil
+	return "", fmt.Errorf("no .xctestrun found under %s", pattern)
+}
+
+// simXctestrunPrefix names the per-simulator copies of the built xctestrun.
+const simXctestrunPrefix = "dlrun-"
+
+// xctestrunForSimulator copies the built xctestrun for one simulator, next
+// to the original because its paths are relative to its own directory.
+// Parallel runs share one build; editing the shared file for each run's port
+// let one run launch its runner on another's port.
+func xctestrunForSimulator(xctestrun, udid string) (string, error) {
+	data, err := os.ReadFile(xctestrun)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(filepath.Dir(xctestrun), simXctestrunPrefix+udid+"-"+filepath.Base(xctestrun))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// testWithoutBuildingArgs are xcodebuild's arguments to start the runner.
+// Diagnostics collection is off from Xcode 15, where the flag exists: on
+// every exit xcodebuild otherwise gathers logs and crash reports for tens of
+// seconds, which delays each runner restart.
+func testWithoutBuildingArgs(xctestrun, destination string, xcodeMajor int) []string {
+	args := []string{"test-without-building", "-xctestrun", xctestrun, "-destination", destination}
+	if xcodeMajor >= 15 {
+		args = append(args, "-collect-test-diagnostics", "never")
+	}
+	return args
+}
+
+var (
+	xcodeMajorOnce sync.Once
+	xcodeMajor     int
+)
+
+// xcodeMajorVersion is the selected Xcode's major version, 0 if unknown.
+func xcodeMajorVersion() int {
+	xcodeMajorOnce.Do(func() {
+		out, err := exec.Command("xcodebuild", "-version").Output()
+		if err == nil {
+			xcodeMajor = parseXcodeMajor(string(out))
+		}
+	})
+	return xcodeMajor
+}
+
+var xcodeVersionPattern = regexp.MustCompile(`Xcode (\d+)`)
+
+func parseXcodeMajor(versionOutput string) int {
+	m := xcodeVersionPattern.FindStringSubmatch(versionOutput)
+	if len(m) != 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
 }
 
 // injectPortIntoXctestrun edits the xctestrun's nested
@@ -477,6 +543,20 @@ func resetSimulator(ctx context.Context, udid string, logOut io.Writer) error {
 	defer cancel()
 	_ = exec.CommandContext(bootCtx, "xcrun", "simctl", "bootstatus", udid, "-b").Run()
 	return nil
+}
+
+// hostAppInstalled reports whether the simulator already has this build of
+// the host app, compared by bundleStamp.
+func hostAppInstalled(udid, bundleID, appPath string) bool {
+	built := bundleStamp(appPath)
+	if built == "" {
+		return false
+	}
+	out, err := simctlCommand("get_app_container", udid, bundleID, "app").Output()
+	if err != nil {
+		return false
+	}
+	return bundleStamp(strings.TrimSpace(string(out))) == built
 }
 
 // simctlInstall calls `xcrun simctl install <udid> <appPath>`. Reinstalls
