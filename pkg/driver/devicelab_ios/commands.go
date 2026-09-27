@@ -26,7 +26,7 @@ func (d *Driver) executeStep(step flow.Step) *core.CommandResult {
 	// /launchApp/stopApp. Read-only steps (assertVisible, waitUntil,
 	// waitForAnimation, takeScreenshot) can keep the cache.
 	switch step.(type) {
-	case *flow.LaunchAppStep, *flow.StopAppStep, *flow.TapOnStep,
+	case *flow.LaunchAppStep, *flow.StopAppStep, *flow.KillAppStep, *flow.TapOnStep,
 		*flow.InputTextStep, *flow.PressKeyStep, *flow.EraseTextStep,
 		*flow.BackStep, *flow.HideKeyboardStep,
 		*flow.SwipeStep, *flow.ScrollStep, *flow.ScrollUntilVisibleStep,
@@ -42,6 +42,10 @@ func (d *Driver) executeStep(step flow.Step) *core.CommandResult {
 		return d.handleSetPermissions(s)
 	case *flow.StopAppStep:
 		return d.handleStopApp(s)
+	case *flow.KillAppStep:
+		return d.handleKillApp(s)
+	case *flow.ClearKeychainStep:
+		return d.handleClearKeychain()
 	case *flow.TapOnStep:
 		return d.handleTapOn(s)
 	case *flow.TapOnPointStep:
@@ -125,15 +129,24 @@ func (d *Driver) handleLaunchApp(s *flow.LaunchAppStep) *core.CommandResult {
 		}
 	}
 
-	if s.StopApp != nil && *s.StopApp {
-		_ = exec.Command("xcrun", "simctl", "terminate", d.udid, bid).Run()
+	d.applyLaunchPermissions(bid, s.Permissions)
+	// After clearState so a reinstall can't race it, before the launch so
+	// the app starts with an empty keychain.
+	if s.ClearKeychain {
+		if err := d.resetKeychain(); err != nil {
+			logger.Warn("launchApp: clearKeychain skipped: %v", err)
+		}
 	}
 
-	args := []string{"simctl", "launch", "--terminate-running-process", d.udid, bid}
+	if s.StopApp != nil && *s.StopApp {
+		_ = d.simctl("terminate", d.udid, bid).Run()
+	}
+
+	args := []string{"launch", "--terminate-running-process", d.udid, bid}
 	args = append(args, flattenArguments(s.Arguments)...)
-	cmd := exec.Command("xcrun", args...)
-	for k, v := range s.Environment {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("SIMCTL_CHILD_%s=%s", k, v))
+	cmd := d.simctl(args...)
+	if env := launchEnv(s.Environment); env != nil {
+		cmd.Env = env
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("simctl launch failed: %s", strings.TrimSpace(string(out))))
@@ -147,12 +160,8 @@ func (d *Driver) handleStopApp(s *flow.StopAppStep) *core.CommandResult {
 	if bid == "" {
 		return core.ErrorResult(fmt.Errorf("stopApp requires an active app"), "no active app")
 	}
-	out, err := exec.Command("xcrun", "simctl", "terminate", d.udid, bid).CombinedOutput()
-	if err != nil {
-		body := strings.ToLower(strings.TrimSpace(string(out)))
-		if !strings.Contains(body, "found nothing") && !strings.Contains(body, "no such process") {
-			return core.ErrorResult(err, fmt.Sprintf("simctl terminate failed: %s", strings.TrimSpace(string(out))))
-		}
+	if err := d.terminateApp(bid); err != nil {
+		return core.ErrorResult(err, err.Error())
 	}
 	return core.SuccessResult(fmt.Sprintf("stopped %s", bid), nil)
 }

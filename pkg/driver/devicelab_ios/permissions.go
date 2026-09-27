@@ -2,12 +2,10 @@ package devicelab_ios
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
-	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
 // handleSetPermissions applies permissions mid-flow on a simulator.
@@ -30,38 +28,16 @@ func (d *Driver) handleSetPermissions(step *flow.SetPermissionsStep) *core.Comma
 
 	appID := step.AppID
 	if appID == "" {
+		appID = d.appID
+	}
+	if appID == "" {
 		return &core.CommandResult{Success: false, Error: fmt.Errorf("no appId"), Message: "setPermissions needs an appId"}
 	}
 	if len(step.Permissions) == 0 {
 		return &core.CommandResult{Success: false, Error: fmt.Errorf("no permissions"), Message: "setPermissions needs at least one permission"}
 	}
 
-	var applied int
-	var failures []string
-	for name, value := range step.Permissions {
-		services := core.IOSPrivacyServices(name)
-		if len(services) == 0 {
-			// iOS exposes no host-side control over this one. Saying so is
-			// the honest answer; failing the step would block a flow over
-			// something no driver can deliver.
-			logger.Warn("setPermissions: iOS has no host-side control over %q — skipping", name)
-			continue
-		}
-		for _, service := range services {
-			action, resolved, ok := core.IOSPrivacyAction(service, value)
-			if !ok {
-				logger.Warn("setPermissions: ignoring unsupported value %q for permission %q", value, name)
-				continue
-			}
-			cmd := exec.Command("xcrun", "simctl", "privacy", d.udid, action, resolved, appID)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				failures = append(failures, fmt.Sprintf("%s: %s", resolved, strings.TrimSpace(string(out))))
-				continue
-			}
-			applied++
-		}
-	}
-
+	applied, failures := d.applyPermissions(appID, step.Permissions)
 	if len(failures) > 0 {
 		return &core.CommandResult{
 			Success: false,

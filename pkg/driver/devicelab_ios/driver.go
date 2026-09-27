@@ -65,6 +65,10 @@ type Driver struct {
 	// runner's node budget, so a missing match may just be past the cap.
 	lastSnapshotTruncated bool
 
+	// stagedApps caches copies of installed app bundles for clearState's
+	// reinstall, keyed by bundle id.
+	stagedApps map[string]stagedApp
+
 	// runnerTimeouts counts steps in a row whose runner call waited out its
 	// deadline; see noteRunnerTimeout.
 	runnerTimeouts int
@@ -95,6 +99,7 @@ func (d *Driver) SetAppID(bundleID string) { d.appID = bundleID }
 
 // Close ends the runner process. Idempotent.
 func (d *Driver) Close() error {
+	d.removeStagedApps()
 	if d.runner == nil {
 		return nil
 	}
