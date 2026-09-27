@@ -135,6 +135,7 @@ func (d *Driver) EnsureSession(appID string) error {
 	_ = d.client.UpdateSettings(map[string]interface{}{
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
+		"animationCoolOffTimeout": 0,
 	})
 	return nil
 }

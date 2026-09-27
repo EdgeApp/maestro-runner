@@ -1170,6 +1170,10 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	sessionSettings := map[string]interface{}{
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
+		// WDA waits this long for the app to be stable after every W3C
+		// action (a swipe); a web page never is, so each swipe cost 8s. The
+		// driver settles on screenshots itself.
+		"animationCoolOffTimeout": 0,
 		"defaultAlertAction":      d.alertAction,
 	}
 	if d.alertAction == "accept" {

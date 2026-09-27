@@ -119,6 +119,7 @@ func (c *Client) DisableQuiescence() error {
 	return c.UpdateSettings(map[string]interface{}{
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
+		"animationCoolOffTimeout": 0,
 	})
 }
 
