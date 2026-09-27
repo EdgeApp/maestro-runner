@@ -127,28 +127,34 @@ func (d *Driver) Hierarchy() ([]byte, error) {
 		return nil, err
 	}
 	type flat struct {
-		Index       int                `json:"index"`
-		ParentIndex *int               `json:"parentIndex,omitempty"`
-		Type        string             `json:"type"`
-		Identifier  string             `json:"identifier,omitempty"`
-		Label       string             `json:"label,omitempty"`
-		Value       string             `json:"value,omitempty"`
-		Placeholder string             `json:"placeholderValue,omitempty"`
-		Rect        map[string]float64 `json:"rect"`
-		Enabled     bool               `json:"enabled"`
-		Selected    bool               `json:"selected"`
-		Focused     bool               `json:"focused"`
+		Index       int            `json:"index"`
+		ParentIndex *int           `json:"parentIndex,omitempty"`
+		Type        string         `json:"type"`
+		Identifier  string         `json:"identifier,omitempty"`
+		Label       string         `json:"label,omitempty"`
+		Value       string         `json:"value,omitempty"`
+		Placeholder string         `json:"placeholderValue,omitempty"`
+		Rect        map[string]int `json:"rect"`
+		Enabled     bool           `json:"enabled"`
+		Selected    bool           `json:"selected"`
+		Focused     bool           `json:"focused"`
 	}
+	// Readers take index as the position in the list and rects as whole
+	// points.
 	nodes := resp.payload().Nodes
+	pos := make(map[int]int, len(nodes))
+	for i, n := range nodes {
+		pos[n.I] = i
+	}
 	out := make([]flat, 0, len(nodes))
-	for _, n := range nodes {
+	for i, n := range nodes {
+		b := bounds(n)
 		f := flat{
-			Index: n.I, Type: n.Type, Identifier: n.ID, Label: firstNonEmpty(n.Label, n.Title), Value: n.Value,
+			Index: i, Type: n.Type, Identifier: n.ID, Label: firstNonEmpty(n.Label, n.Title), Value: n.Value,
 			Placeholder: n.Placeholder, Enabled: n.Enabled, Selected: n.Selected, Focused: n.Focused,
-			Rect: map[string]float64{"x": n.X, "y": n.Y, "width": n.W, "height": n.H},
+			Rect: map[string]int{"x": b.X, "y": b.Y, "width": b.Width, "height": b.Height},
 		}
-		if n.P >= 0 {
-			p := n.P
+		if p, ok := pos[n.P]; ok && n.P >= 0 {
 			f.ParentIndex = &p
 		}
 		out = append(out, f)

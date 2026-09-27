@@ -73,7 +73,7 @@ func TestHierarchy(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Nodes) != 2 || got.Nodes[0].ParentIndex != nil || *got.Nodes[1].ParentIndex != 1 ||
+	if len(got.Nodes) != 2 || got.Nodes[0].ParentIndex != nil || *got.Nodes[1].ParentIndex != 0 ||
 		got.Nodes[1].Label != "OK" || got.Nodes[1].Rect["width"] != 50 {
 		t.Fatalf("hierarchy = %s", raw)
 	}
