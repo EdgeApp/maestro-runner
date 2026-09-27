@@ -114,9 +114,16 @@ Unknown fields are ignored. Missing required fields produce `INVALID_ARGUMENT`.
 
 | Command | Inputs | Returns |
 |---|---|---|
-| `snapshot` | `appBundleId?` | `{ nodes: [SnapshotNode] }` |
+| `snapshot` | `appBundleId?`, `visibleOnly?` | `{ nodes: [SnapshotNode], truncated }` |
 | `screenSize` | `appBundleId?` | `{ width, height, scale }` |
 | `idle` | `appBundleId?`, `timeoutMs?` (default 1000, max 10000, `0` = do not wait) | `{ idle, waitedMs, appState, message }` |
+| `settle` | `timeoutMs?` (default 3000, max 10000) | `{ idle, waitedMs, message }` |
+
+`visibleOnly` (local addition) returns only elements at least 10% on screen — Maestro's `filterOutOfBounds` rule — plus no element under a wholly off-screen ancestor, whose frame is clipped to the viewport. The runner still walks the whole tree; off-screen elements are skipped without being evaluated and their on-screen children attach to the nearest included ancestor. The host uses it for every lookup, and the full tree only for reports. The node budget is 3000 on-screen nodes (1500 for a full tree); `truncated` says when it was hit.
+
+`settle` (local addition) waits until two consecutive 48×104 grayscale thumbnails of the screen agree (at most 0.2% of pixels moving by more than 6 gray levels), Maestro's static-screen test done on the device. `idle` is `true` when the screen settled within the cap. It never activates the app.
+
+Every response carries `serverMs`, the runner's own time on the command; the runner also logs `DL_CMD cmd= ms= bytes= ok=` per command.
 
 `snapshot` always returns the full tree. If `appBundleId` is omitted, snapshots the frontmost app; if that cannot be resolved the call fails with `NO_TARGET_APP` rather than launching the runner's host app. **No filtering, no caps, no occlusion computation.**
 
@@ -175,7 +182,9 @@ All gestures accept `appBundleId` so the runner can target the right `XCUIApplic
 | `longPress` | `x, y, durationMs` | gesture timings |
 | `swipe` | EITHER `x, y, x2, y2, durationMs` OR `direction, percent` | gesture timings + `path: [{x,y},...]` |
 | `scroll` | EITHER coordinate path OR `direction, percent` (same as swipe but with slower default duration) | gesture timings |
-| `drag` | `x, y, x2, y2, durationMs` (press-before-move hold), `moveDurationMs?` (movement time — local addition; when set, drags via `press(forDuration:thenDragTo:withVelocity:thenHoldForDuration:)` with a 250ms settle before release, for dragAndDrop reorder semantics) | gesture timings + path |
+| `drag` | `x, y, x2, y2, durationMs` (press-before-move hold), `moveDurationMs?` (movement time), `restMs?` (rest at the end point before lifting — local addition) | gesture timings + path |
+
+Taps, double taps, long presses and drags with a hold of 50ms or less are sent as synthesized touch events (`XCSynthesizedEventRecord` + `XCPointerEventPath`) in screen points, with no element lookups and no idle waits: touch at `x, y`, rest `durationMs`, move to `x2, y2` over `moveDurationMs` (default 100), rest `restMs` (default 0, or 250 when a `moveDurationMs` is given), lift. The host sends Maestro's swipe shape: hold 0, move 100ms, rest = the swipe's duration. A longer hold (a dragAndDrop lift) and any gesture on a rotated screen use `XCUICoordinate`'s `press(forDuration:thenDragTo:withVelocity:thenHoldForDuration:)`, as does any gesture whose synthesis fails.
 | `pinch` | `x, y, scale, durationMs` | gesture timings |
 | `pressButton` | `button: "home"|"lock"|"volumeUp"|"volumeDown"|"appSwitcher"` | `{ pressed: true }` |
 | `rotate` | `orientation: "portrait"|"landscapeLeft"|"landscapeRight"|"portraitUpsideDown"` | `{ orientation }` |
