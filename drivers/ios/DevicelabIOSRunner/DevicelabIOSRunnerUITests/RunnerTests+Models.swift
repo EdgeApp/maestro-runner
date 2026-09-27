@@ -62,6 +62,12 @@ enum CommandType: String, Codable {
   // around every synthesized event, on demand. Read-only: it never
   // activates the app. Returns `idle` and `waitedMs`.
   case idle
+  // Local extension: wait, capped by `timeoutMs` (default 3000), until the
+  // screen stops changing — two consecutive small grayscale thumbnails of
+  // the screen agree. Maestro's static-screen test, done on the device so a
+  // settle costs one round trip. Never activates the app. Returns `idle`
+  // (true = settled) and `waitedMs`.
+  case settle
 }
 
 struct Command: Codable {

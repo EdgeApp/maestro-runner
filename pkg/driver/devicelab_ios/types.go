@@ -74,6 +74,11 @@ const (
 	// pre/post-event check, run on demand). Read-only: the runner never
 	// activates the app for it. Answers ResponseData.Idle and WaitedMs.
 	CmdIdle CommandType = "idle"
+	// CmdSettle — local extension: wait, capped by Command.TimeoutMs
+	// (default 3000, clamped to 10000), until two consecutive screen
+	// thumbnails agree — Maestro's static-screen test, run on the device.
+	// Answers ResponseData.Idle (true = settled) and WaitedMs.
+	CmdSettle CommandType = "settle"
 )
 
 // Command is the wire request envelope. Mirrors the Swift Command struct

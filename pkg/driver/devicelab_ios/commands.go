@@ -530,35 +530,30 @@ func (d *Driver) handlePressKey(s *flow.PressKeyStep) *core.CommandResult {
 	return core.SuccessResult(fmt.Sprintf("pressed %s", s.Key), nil)
 }
 
-// handleWaitForAnimation delegates the entire poll loop to the runner via
-// the `awaitIdle` command. The runner holds the previous screenshot
-// in-process between iterations and compares each new capture against
-// it. We pay ONE HTTP roundtrip per waitForAnimation step instead of one
-// per iteration. The runner's loop returns as soon as two consecutive
-// captures are within the 0.5% threshold, or on timeout (success either
-// way — Maestro semantics: best-effort settle).
+// handleWaitForAnimation waits for the screen to stop changing, the way
+// Maestro's waitForAnimationToEnd does: consecutive screenshots, compared on
+// the device (the settle command), until two agree or the timeout passes —
+// a best-effort wait, so a screen still moving at the timeout passes too.
+// It used to compare accessibility trees, which on a web page costs a full
+// tree read per sample and misses purely visual animation.
 func (d *Driver) handleWaitForAnimation(s *flow.WaitForAnimationToEndStep) *core.CommandResult {
 	timeoutMs := float64(s.TimeoutMs)
 	if timeoutMs <= 0 {
 		timeoutMs = 15000
 	}
-	threshold := 0.005
-	// Use a callTimeout slightly larger than the wait timeout so HTTP
-	// doesn't cut off the runner before its own deadline.
-	bufferMs := timeoutMs + 5000
-	ctx, cancel := context.WithTimeout(d.parentContext(), time.Duration(bufferMs)*time.Millisecond)
-	defer cancel()
-	_, err := d.client.Call(ctx, Command{
-		Command:     CmdAwaitIdle,
-		AppBundleID: d.appID,
-		DurationMs:  &timeoutMs,
-		Scale:       &threshold,
-	})
-	if err != nil {
-		return core.ErrorResult(err, "awaitIdle failed: "+err.Error())
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	// The runner caps one settle at 10s; a longer wait asks again.
+	for time.Until(deadline) > 0 {
+		capMs := math.Min(float64(time.Until(deadline).Milliseconds()), settleMaxCapMs)
+		if d.settleScreen(capMs) {
+			return core.SuccessResult("animation ended", nil)
+		}
 	}
-	return core.SuccessResult("animation ended", nil)
+	return core.SuccessResult("animation still running at the timeout (proceeding)", nil)
 }
+
+// settleMaxCapMs is the longest single settle the runner accepts.
+const settleMaxCapMs = 10000
 
 // handleEraseText emits a `type` request with textEntryMode="replace", an
 // empty text payload and deleteCount, which the runner treats as "delete this
@@ -643,33 +638,58 @@ func (d *Driver) handleHideKeyboard(s *flow.HideKeyboardStep) *core.CommandResul
 	return core.SuccessResult("keyboard dismissed", nil)
 }
 
-// handleSwipe routes maestro's SwipeStep to the runner's drag command.
-// agent-device's `swipe` command only handles tvOS direction-based swipes;
-// for iOS we always use `drag` with concrete coordinates and compute the
-// from/to points from direction or percentage/absolute coords.
+// handleSwipe routes maestro's SwipeStep to the runner's drag command with
+// Maestro's swipe shape: no press before the move, a 0.1s move, then a rest
+// of the swipe's duration before lifting. The duration used to go out as
+// DurationMs, which the runner holds BEFORE moving — every swipe was a long
+// press on whatever sat under the finger, then a drag.
 func (d *Driver) handleSwipe(s *flow.SwipeStep) *core.CommandResult {
 	fromX, fromY, toX, toY, err := d.resolveSwipeCoords(s)
 	if err != nil {
 		return core.ErrorResult(err, "swipe: "+err.Error())
 	}
-	durationMs := float64(s.Duration)
-	if durationMs <= 0 {
-		durationMs = 200 // matches maestro upstream default
+	restMs := float64(s.Duration)
+	if restMs <= 0 {
+		restMs = maestroSwipeDurationMs
 	}
-	ctx, cancel := d.callTimeout()
-	defer cancel()
-	if _, err := d.client.Call(ctx, Command{
-		Command:     CmdDrag,
-		AppBundleID: d.appID,
-		X:           ptrFloat(fromX),
-		Y:           ptrFloat(fromY),
-		X2:          ptrFloat(toX),
-		Y2:          ptrFloat(toY),
-		DurationMs:  &durationMs,
-	}); err != nil {
+	if err := d.swipeGesture(fromX, fromY, toX, toY, restMs); err != nil {
 		return core.ErrorResult(err, "swipe failed: "+err.Error())
 	}
 	return core.SuccessResult("swiped", nil)
+}
+
+// Maestro's gesture timing (maestro-orchestra Commands.kt): a swipe lasts
+// 400ms by default; `scroll` is a 333ms swipe (IOSDriver.scrollVertical);
+// scrollUntilVisible's default speed of 40 is 601ms. Every swipe moves in
+// swipeMoveMs and rests for its duration before lifting.
+const (
+	maestroSwipeDurationMs          = 400
+	maestroScrollDurationMs         = 333
+	maestroScrollUntilVisibleRestMs = 601
+	swipeMoveMs                     = 100
+)
+
+// swipeGesture sends one swipe: touch at (fromX, fromY) with no press first,
+// move to (toX, toY) in swipeMoveMs, rest restMs, lift. A short rest lets the
+// content fling; a long one stops it where the finger stops. The cached
+// snapshot is dropped afterwards: the screen it described has moved.
+func (d *Driver) swipeGesture(fromX, fromY, toX, toY, restMs float64) error {
+	hold, move := 0.0, float64(swipeMoveMs)
+	ctx, cancel := d.callTimeout()
+	defer cancel()
+	_, err := d.client.Call(ctx, Command{
+		Command:        CmdDrag,
+		AppBundleID:    d.appID,
+		X:              ptrFloat(fromX),
+		Y:              ptrFloat(fromY),
+		X2:             ptrFloat(toX),
+		Y2:             ptrFloat(toY),
+		DurationMs:     &hold,
+		MoveDurationMs: &move,
+		RestMs:         &restMs,
+	})
+	d.invalidateSnapshotCache()
+	return err
 }
 
 // handleDragAndDrop long-presses the source and drags it to the target — the
@@ -729,63 +749,40 @@ func (d *Driver) resolveDragEndpoint(sel flow.Selector, optional bool, timeoutMs
 }
 
 // handleScroll converts maestro's ScrollStep to a swipe in the opposite
-// direction (Maestro: "scroll down" = reveal bottom content = swipe up).
+// direction (Maestro: "scroll down" = reveal bottom content = swipe up), with
+// Maestro's scroll timing unless the step sets a speed.
 func (d *Driver) handleScroll(s *flow.ScrollStep) *core.CommandResult {
-	w, h := d.screenDims()
-	if w == 0 || h == 0 {
-		return core.ErrorResult(fmt.Errorf("screen size not available"), "screen size unknown")
-	}
-	// Like Maestro's iOS driver: from the centre to 10% from the edge.
-	fw, fh := float64(w), float64(h)
-	centerX, centerY := fw/2, fh/2
-	var fromX, fromY, toX, toY float64
-	switch strings.ToLower(s.Direction) {
-	case "up":
-		fromX, fromY, toX, toY = centerX, centerY, centerX, fh*0.9
-	case "down":
-		fromX, fromY, toX, toY = centerX, centerY, centerX, fh*0.1
-	case "left":
-		fromX, fromY, toX, toY = centerX, centerY, fw*0.9, centerY
-	case "right":
-		fromX, fromY, toX, toY = centerX, centerY, fw*0.1, centerY
-	default:
-		return core.ErrorResult(fmt.Errorf("invalid direction: %s", s.Direction), "invalid scroll direction")
-	}
-	// durationMs is the hold before the move. Keep it at the runner's
-	// minimum: a finger resting on a row is a tap on that row (a settings
-	// list opened a link mid-scroll).
-	durationMs := scrollHoldMs
-	// A fast scroll (speed near 100) lets go at speed so the content flings,
-	// as Maestro's does; otherwise the runner moves at a set pace and holds
-	// at the end, so the scroll travels the swipe and no further.
-	var moveDurationMs *float64
-	if ms := core.ScrollDurationOrDefault(s.Speed, scrollControlledMs); ms >= scrollControlledMs {
-		m := float64(scrollControlledMs)
-		moveDurationMs = &m
-	}
-	ctx, cancel := d.callTimeout()
-	defer cancel()
-	if _, err := d.client.Call(ctx, Command{
-		Command:        CmdDrag,
-		AppBundleID:    d.appID,
-		X:              ptrFloat(fromX),
-		Y:              ptrFloat(fromY),
-		X2:             ptrFloat(toX),
-		Y2:             ptrFloat(toY),
-		DurationMs:     &durationMs,
-		MoveDurationMs: moveDurationMs,
-	}); err != nil {
+	restMs := float64(core.ScrollDurationOrDefault(s.Speed, maestroScrollDurationMs))
+	if err := d.scrollOnce(s.Direction, restMs); err != nil {
 		return core.ErrorResult(err, "scroll failed: "+err.Error())
 	}
 	return core.SuccessResult(fmt.Sprintf("scrolled %s", s.Direction), nil)
 }
 
-// Scroll gesture timing: the hold before the move (the runner's minimum),
-// and the paced move a scroll without a fast speed uses.
-const (
-	scrollHoldMs       = 16.0
-	scrollControlledMs = 300
-)
+// scrollOnce swipes from the screen centre to 10% from the edge opposite to
+// the scroll direction, like Maestro's iOS driver.
+func (d *Driver) scrollOnce(direction string, restMs float64) error {
+	w, h := d.screenDims()
+	if w == 0 || h == 0 {
+		return fmt.Errorf("screen size not available")
+	}
+	fw, fh := float64(w), float64(h)
+	centerX, centerY := fw/2, fh/2
+	var toX, toY float64
+	switch strings.ToLower(direction) {
+	case "up":
+		toX, toY = centerX, fh*0.9
+	case "down":
+		toX, toY = centerX, fh*0.1
+	case "left":
+		toX, toY = fw*0.9, centerY
+	case "right":
+		toX, toY = fw*0.1, centerY
+	default:
+		return fmt.Errorf("invalid direction: %s", direction)
+	}
+	return d.swipeGesture(centerX, centerY, toX, toY, restMs)
+}
 
 // handleScrollUntilVisible scrolls in the chosen direction until the
 // target element appears or the budget runs out.
@@ -806,51 +803,37 @@ func (d *Driver) handleScrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.
 		timeout = time.Duration(s.TimeoutMs) * time.Millisecond
 	}
 	deadline := time.Now().Add(timeout)
+	restMs := float64(core.ScrollDurationOrDefault(s.Speed, maestroScrollUntilVisibleRestMs))
 	// Stop early when the surface stops moving — a target that is not in the
 	// list should not cost every scroll the step allows.
 	var progress core.ScrollProgress
 
 	for i := 0; i < maxScrolls && time.Now().Before(deadline); i++ {
-		node, err := d.scrollTargetOnScreen(s.Element, s.VisibilityPercentage)
-		if err == nil && node != nil && d.isDisplayed(node) {
-			// A found element is not necessarily a visible one: a ScrollView
-			// item keeps a real frame while sitting below the fold, and a
-			// half-covered element is exactly what the following tap would
-			// mis-hit. Keep scrolling until enough of it is on screen —
-			// unless the screen size is unknown, where the old behavior is
-			// the only option.
-			w, h := d.screenDims()
-			if w == 0 || h == 0 || core.MeetsVisibility(snapshotBounds(node), w, h, s.VisibilityPercentage) {
-				// The clamp check enforces only the default fully-visible
-				// contract — an explicit visibilityPercentage is the flow
-				// accepting partial visibility, clipped frames included.
-				explicitThreshold := s.VisibilityPercentage >= 1 && s.VisibilityPercentage < 100
-				clamped := false
-				if !explicitThreshold && w > 0 && h > 0 {
-					// Same snapshot the match came from: the cache is still
-					// warm, and the helper verifies provenance before
-					// trusting any parent link.
-					if nodes, err := d.fetchSnapshot(); err == nil {
-						clamped = frameClampedByOffscreenAncestor(nodes, node, w, h)
-					}
-				}
-				if !clamped {
-					return core.SuccessResult("element found after scrolling", toElementInfo(node))
-				}
+		// One snapshot per round, of the screen as it is now: the match and
+		// the progress check both read it. It holds only on-screen elements,
+		// so a copy of the target parked off the edge cannot shadow the one
+		// that scrolls into view.
+		d.invalidateSnapshotCache()
+		nodes, err := d.fetchSnapshot()
+		if err == nil {
+			if node := d.scrollTargetIn(nodes, s.Element, s.VisibilityPercentage); node != nil {
+				return core.SuccessResult("element found after scrolling", toElementInfo(node))
+			}
+			if sig, ok := scrollSurfaceSignature(nodes); ok && progress.Observe(sig) {
+				return core.ErrorResult(
+					fmt.Errorf("element not found after %d scrolls", i),
+					fmt.Sprintf("scroll target not found: scrolling %s made no progress (end of content?)", direction),
+				)
 			}
 		}
-		if sig, ok := d.scrollSurfaceSignature(); ok && progress.Observe(sig) {
-			return core.ErrorResult(
-				fmt.Errorf("element not found after %d scrolls", i),
-				fmt.Sprintf("scroll target not found: scrolling %s made no progress (end of content?)", direction),
-			)
-		}
 
-		result := d.handleScroll(&flow.ScrollStep{Direction: direction, Speed: s.Speed})
-		if !result.Success {
-			return result
+		if err := d.scrollOnce(direction, restMs); err != nil {
+			return core.ErrorResult(err, "scroll failed: "+err.Error())
 		}
-		time.Sleep(300 * time.Millisecond)
+		// Let the content come to rest before the next look, as Maestro does
+		// after every swipe: a list still coasting reads as a different
+		// screen each time and its rows are not where they will stop.
+		d.settleScreen(settleCapMs(deadline))
 	}
 	return core.ErrorResult(
 		fmt.Errorf("element not found after scrolling"),
@@ -858,35 +841,41 @@ func (d *Driver) handleScrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.
 	)
 }
 
-// scrollTargetOnScreen finds the scroll target, preferring a match that is on
-// screen enough to count: when a page holds several copies (a hidden one
-// parked off the edge, the real one in the footer), the first in tree order
-// may never become visible, and checking only it scrolled past the real one.
-// Maestro drops out-of-bounds matches before choosing, to the same effect.
-// With no match in the snapshot it falls back to findElement's other
-// strategies.
-func (d *Driver) scrollTargetOnScreen(sel flow.Selector, visibilityPct int) (*SnapshotNode, error) {
-	nodes, err := d.snapshotMatching(sel)
-	if err == nil && len(nodes) > 0 && sel.Index == "" {
-		if w, h := d.screenDims(); w > 0 && h > 0 {
-			for i := range nodes {
-				if d.isDisplayed(&nodes[i]) && core.MeetsVisibility(snapshotBounds(&nodes[i]), w, h, visibilityPct) {
-					return &nodes[i], nil
-				}
-			}
-		}
-		return &nodes[0], nil
+// scrollTargetIn returns the first match for sel in nodes that is on screen
+// enough to count (visibilityPct, default fully), or nil.
+func (d *Driver) scrollTargetIn(nodes []SnapshotNode, sel flow.Selector, visibilityPct int) *SnapshotNode {
+	hits := matchNodes(nodes, sel)
+	if len(hits) == 0 {
+		return nil
 	}
-	return d.findElement(sel, true, 1000)
+	if sel.Index != "" {
+		node := selectByIndex(nodesToPtrs(hits), sel.Index)
+		if node == nil || !d.isDisplayed(node) {
+			return nil
+		}
+		hits = []SnapshotNode{*node}
+	}
+	w, h := d.screenDims()
+	for i := range hits {
+		if !d.isDisplayed(&hits[i]) {
+			continue
+		}
+		// A found element is not necessarily a visible one: a half-covered
+		// row is what the tap that follows would mis-hit. With no screen
+		// size, a displayed match is the best answer there is.
+		if w == 0 || h == 0 || core.MeetsVisibility(snapshotBounds(&hits[i]), w, h, visibilityPct) {
+			return &hits[i]
+		}
+	}
+	return nil
 }
 
-// scrollSurfaceSignature reduces the current snapshot to a key for
-// core.ScrollProgress: type, label, identifier, value and frame of every
-// node, so a list that advanced by one row still reads as movement. A
-// snapshot that cannot be read reports ok=false and is not observed.
-func (d *Driver) scrollSurfaceSignature() (string, bool) {
-	nodes, err := d.fetchSnapshot()
-	if err != nil || len(nodes) == 0 {
+// scrollSurfaceSignature reduces a snapshot to a key for core.ScrollProgress:
+// type, label, identifier, value and frame of every on-screen node, so a
+// list that advanced by one row still reads as movement. An empty snapshot
+// reports ok=false and is not observed.
+func scrollSurfaceSignature(nodes []SnapshotNode) (string, bool) {
+	if len(nodes) == 0 {
 		return "", false
 	}
 	var sb strings.Builder
@@ -894,6 +883,36 @@ func (d *Driver) scrollSurfaceSignature() (string, bool) {
 		fmt.Fprintf(&sb, "%s|%s|%s|%s|%v\n", n.Type, n.Label, n.Identifier, n.Value, n.Rect)
 	}
 	return core.ScrollSignature(sb.String()), true
+}
+
+// settleDefaultCapMs is how long a settle may wait for the screen to stop
+// changing — Maestro's own cap.
+const settleDefaultCapMs = 3000
+
+// settleCapMs is the settle cap, shortened so it never runs past deadline.
+func settleCapMs(deadline time.Time) float64 {
+	left := time.Until(deadline).Milliseconds()
+	if left < 0 {
+		return 0
+	}
+	return math.Min(float64(left), settleDefaultCapMs)
+}
+
+// settleScreen waits, on the device, until two consecutive screen thumbnails
+// agree or capMs passes, and reports whether the screen settled. A runner
+// that predates the command gets the old fixed 300ms pause instead.
+func (d *Driver) settleScreen(capMs float64) bool {
+	if capMs <= 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(d.parentContext(), time.Duration(capMs+5000)*time.Millisecond)
+	defer cancel()
+	data, err := d.client.Call(ctx, Command{Command: CmdSettle, TimeoutMs: &capMs})
+	if err != nil || data == nil || data.Idle == nil {
+		time.Sleep(300 * time.Millisecond)
+		return false
+	}
+	return *data.Idle
 }
 
 func (d *Driver) handleDoubleTap(s *flow.DoubleTapOnStep) *core.CommandResult {
@@ -1381,6 +1400,13 @@ func (d *Driver) snapshotMatching(sel flow.Selector) ([]SnapshotNode, error) {
 	if err != nil {
 		return nil, err
 	}
+	return matchNodes(nodes, sel), nil
+}
+
+// matchNodes returns the nodes matching sel, best first: exact id, exact
+// text and exact case ahead of looser matches, then editable inputs and
+// interactive controls ahead of everything else.
+func matchNodes(nodes []SnapshotNode, sel flow.Selector) []SnapshotNode {
 	var hits []SnapshotNode
 	for i := range nodes {
 		if matchesSelector(&nodes[i], sel) {
@@ -1397,7 +1423,7 @@ func (d *Driver) snapshotMatching(sel flow.Selector) ([]SnapshotNode, error) {
 	if len(hits) > 1 {
 		hits = preferEditableInputs(hits)
 	}
-	return hits, nil
+	return hits
 }
 
 func (d *Driver) fetchSnapshot() ([]SnapshotNode, error) {

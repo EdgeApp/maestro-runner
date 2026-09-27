@@ -248,18 +248,19 @@ func TestScrollUntilVisible_PicksTheMatchOnScreen(t *testing.T) {
 	}
 }
 
-// A scroll holds only the runner's minimum before moving (a resting finger
-// taps the row under it), swipes from the centre to 10% from the edge, and
-// with a fast speed lets go at speed so the content flings.
-func TestScroll_NoHoldMaestroDistanceFlingWhenFast(t *testing.T) {
+// A scroll is Maestro's swipe: no press before the move (a resting finger
+// taps the row under it), centre to 10% from the edge, a 0.1s move, then a
+// rest — Maestro's 333ms for `scroll`, or the speed's duration, where a fast
+// speed rests only a moment and so lets the content fling.
+func TestScroll_MaestroSwipeShape(t *testing.T) {
 	info := &core.PlatformInfo{ScreenWidth: 400, ScreenHeight: 800}
 	for _, tc := range []struct {
-		name      string
-		speed     int
-		wantPaced bool
+		name     string
+		speed    int
+		wantRest float64
 	}{
-		{"default pace", 0, true},
-		{"fast flings", 100, false},
+		{"default", 0, maestroScrollDurationMs},
+		{"fast flings", 100, float64(core.ScrollSpeedToDurationMs(100))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, g := newGestureDriver(t, info, func(int) []SnapshotNode { return nil })
@@ -267,14 +268,57 @@ func TestScroll_NoHoldMaestroDistanceFlingWhenFast(t *testing.T) {
 				t.Fatalf("scroll failed: %s", res.Message)
 			}
 			drag := g.lastDrag(t)
-			for k, v := range map[string]float64{"x": 200, "y": 400, "x2": 200, "y2": 80, "durationMs": scrollHoldMs} {
+			want := map[string]float64{
+				"x": 200, "y": 400, "x2": 200, "y2": 80,
+				"durationMs": 0, "moveDurationMs": swipeMoveMs, "restMs": tc.wantRest,
+			}
+			for k, v := range want {
 				if got, _ := drag[k].(float64); got != v {
 					t.Errorf("%s = %v, want %v", k, drag[k], v)
 				}
 			}
-			_, paced := drag["moveDurationMs"]
-			if paced != tc.wantPaced {
-				t.Errorf("moveDurationMs present = %v, want %v", paced, tc.wantPaced)
+		})
+	}
+}
+
+func TestScroll_InvalidDirection(t *testing.T) {
+	info := &core.PlatformInfo{ScreenWidth: 400, ScreenHeight: 800}
+	d, g := newGestureDriver(t, info, func(int) []SnapshotNode { return nil })
+	if res := d.handleScroll(&flow.ScrollStep{Direction: "sideways"}); res.Success {
+		t.Fatal("scroll with an invalid direction succeeded")
+	}
+	if g.dragCount() != 0 {
+		t.Errorf("drags = %d, want none", g.dragCount())
+	}
+	noScreen, _ := newGestureDriver(t, nil, func(int) []SnapshotNode { return nil })
+	if res := noScreen.handleScroll(&flow.ScrollStep{Direction: "down"}); res.Success {
+		t.Fatal("scroll with no screen size succeeded")
+	}
+}
+
+// A swipe no longer holds its duration before moving — that made every swipe
+// a long press on whatever sat under the finger. The duration is the rest at
+// the end, Maestro's 400ms by default.
+func TestSwipe_DurationIsTheRestNotAHold(t *testing.T) {
+	info := &core.PlatformInfo{ScreenWidth: 400, ScreenHeight: 800}
+	for _, tc := range []struct {
+		name     string
+		duration int
+		wantRest float64
+	}{
+		{"default", 0, maestroSwipeDurationMs},
+		{"explicit", 1200, 1200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, g := newGestureDriver(t, info, func(int) []SnapshotNode { return nil })
+			if res := d.handleSwipe(&flow.SwipeStep{Direction: "left", Duration: tc.duration}); !res.Success {
+				t.Fatalf("swipe failed: %s", res.Message)
+			}
+			drag := g.lastDrag(t)
+			for k, v := range map[string]float64{"durationMs": 0, "moveDurationMs": swipeMoveMs, "restMs": tc.wantRest} {
+				if got, _ := drag[k].(float64); got != v {
+					t.Errorf("%s = %v, want %v", k, drag[k], v)
+				}
 			}
 		})
 	}

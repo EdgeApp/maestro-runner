@@ -1579,7 +1579,8 @@ extension RunnerTests {
     x2: Double,
     y2: Double,
     holdDuration: TimeInterval,
-    moveDuration: TimeInterval? = nil
+    moveDuration: TimeInterval? = nil,
+    restDuration: TimeInterval? = nil
   ) -> RunnerInteractionOutcome {
     // tvOS has no coordinate drag. Preserve the direction as a focus move.
     let dx = x2 - x
@@ -1592,7 +1593,7 @@ extension RunnerTests {
     }
     return performCoordinateDrag(
       app: app, x: x, y: y, x2: x2, y2: y2,
-      holdDuration: holdDuration, moveDuration: moveDuration)
+      holdDuration: holdDuration, moveDuration: moveDuration, restDuration: restDuration)
   }
 
   func keyboardAvoidingDragPoints(
@@ -1604,6 +1605,13 @@ extension RunnerTests {
   ) -> DragPoints {
     let original = DragPoints(x: x, y: y, x2: x2, y2: y2)
 #if os(iOS)
+    // No keyboard reaches the upper part of the screen, and looking for one
+    // is a query that walks the whole tree on a web page — skip it for a
+    // gesture that stays up there (every scroll: centre to 10% from the top).
+    let screenHeight = Double(UIScreen.main.bounds.height)
+    if screenHeight > 0 && max(y, y2) < screenHeight * 0.55 {
+      return original
+    }
     guard let keyboardFrame = visibleKeyboardFrame(app: app) else {
       return original
     }
@@ -1657,17 +1665,12 @@ extension RunnerTests {
 #endif
   }
 
+  /// The touch point echoed in a gesture's response. It used to resolve the
+  /// app frame, its windows and the keyboard — three or four queries, each
+  /// walking the whole tree on a web page — on every tap and drag, for
+  /// reference sizes no host reads. The point is already in screen space.
   func resolvedTouchVisualizationFrame(app: XCUIApplication, x: Double, y: Double) -> TouchVisualizationFrame {
-    let appFrame = app.frame
-    let referenceFrame = resolvedTouchReferenceFrame(app: app, appFrame: appFrame)
-    let originX = appFrame.isEmpty ? referenceFrame.minX : appFrame.minX
-    let originY = appFrame.isEmpty ? referenceFrame.minY : appFrame.minY
-    return TouchVisualizationFrame(
-      x: originX + x,
-      y: originY + y,
-      referenceWidth: referenceFrame.width,
-      referenceHeight: referenceFrame.height
-    )
+    return TouchVisualizationFrame(x: x, y: y, referenceWidth: 0, referenceHeight: 0)
   }
 
   func resolvedDragVisualizationFrame(
@@ -1842,10 +1845,62 @@ extension RunnerTests {
     return app
   }
 
+  // MARK: - Synthesized touches
+  //
+  // Taps, swipes and scrolls go to the screen as synthesized touch events
+  // (Maestro's and WebDriverAgent's mechanism), in screen points — the space
+  // snapshot frames are in. XCUICoordinate first resolves the app's windows
+  // (a query that walks the whole tree on a web page) and waits for the app
+  // to go idle before and after; its press(forDuration:thenDragTo:) also has
+  // no way to fling. The XCUICoordinate path stays as the fallback.
+
+  /// Press time of a synthesized tap, and the gap between the taps of a
+  /// double tap.
+  static let syntheticTapPress: TimeInterval = 0.05
+  static let syntheticDoubleTapGap: TimeInterval = 0.1
+
+  /// UIInterfaceOrientation to stamp on a synthesized event, or nil when the
+  /// device is rotated: synthesized points are used only in portrait, where
+  /// screen points and snapshot frames coincide. Rotated screens keep the
+  /// XCUICoordinate path.
+  private func syntheticOrientation() -> Int64? {
+    switch XCUIDevice.shared.orientation {
+    case .portrait, .unknown, .faceUp, .faceDown:
+      return Int64(UIInterfaceOrientation.portrait.rawValue)
+    default:
+      return nil
+    }
+  }
+
+  private func sendSyntheticTaps(x: Double, y: Double, count: Int, press: TimeInterval) -> Bool {
+    guard let orientation = syntheticOrientation() else { return false }
+    var error: NSError?
+    if DLSendSyntheticTaps(CGPoint(x: x, y: y), UInt(count), press, Self.syntheticDoubleTapGap, orientation, &error) {
+      return true
+    }
+    NSLog("DL_SYNTH_FALLBACK taps error=%@", error?.localizedDescription ?? "unknown")
+    return false
+  }
+
+  private func sendSyntheticTouch(
+    from: CGPoint, to: CGPoint, hold: TimeInterval, move: TimeInterval, rest: TimeInterval
+  ) -> Bool {
+    guard let orientation = syntheticOrientation() else { return false }
+    var error: NSError?
+    if DLSendSyntheticTouch(from, to, hold, move, rest, orientation, &error) {
+      return true
+    }
+    NSLog("DL_SYNTH_FALLBACK touch error=%@", error?.localizedDescription ?? "unknown")
+    return false
+  }
+
   private func performCoordinateTap(app: XCUIApplication, x: Double, y: Double) -> RunnerInteractionOutcome {
 #if os(tvOS)
     return .unsupported("coordinate tap is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
+    if sendSyntheticTaps(x: x, y: y, count: 1, press: Self.syntheticTapPress) {
+      return .performed
+    }
     interactionCoordinate(app: app, x: x, y: y).tap()
     return .performed
 #endif
@@ -1855,6 +1910,9 @@ extension RunnerTests {
 #if os(tvOS)
     return .unsupported("coordinate double tap is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
+    if sendSyntheticTaps(x: x, y: y, count: 2, press: Self.syntheticTapPress) {
+      return .performed
+    }
     interactionCoordinate(app: app, x: x, y: y).doubleTap()
     return .performed
 #endif
@@ -1864,10 +1922,20 @@ extension RunnerTests {
 #if os(tvOS)
     return .unsupported("coordinate long press is not supported on tvOS; move focus with swipe or scroll, then long-select the focused element")
 #else
+    if sendSyntheticTaps(x: x, y: y, count: 1, press: duration) {
+      return .performed
+    }
     interactionCoordinate(app: app, x: x, y: y).press(forDuration: duration)
     return .performed
 #endif
   }
+
+  /// A hold longer than this is a drag-and-drop lift, which keeps
+  /// XCUICoordinate's paced drag; anything shorter is a swipe or a scroll.
+  static let maxSwipeHold: TimeInterval = 0.05
+  /// Move time of a synthesized swipe when the caller gives none — the 0.1s
+  /// Maestro's swipes use.
+  static let defaultSwipeMove: TimeInterval = 0.1
 
   private func performCoordinateDrag(
     app: XCUIApplication,
@@ -1876,11 +1944,26 @@ extension RunnerTests {
     x2: Double,
     y2: Double,
     holdDuration: TimeInterval,
-    moveDuration: TimeInterval? = nil
+    moveDuration: TimeInterval? = nil,
+    restDuration: TimeInterval? = nil
   ) -> RunnerInteractionOutcome {
 #if os(tvOS)
     return .unsupported("coordinate drag is not supported on tvOS")
 #else
+    if holdDuration <= Self.maxSwipeHold {
+      // A paced move used to end with a 0.25s hold; keep that when the
+      // caller asks for a pace but no rest.
+      let rest = restDuration ?? (moveDuration != nil ? 0.25 : 0)
+      if sendSyntheticTouch(
+        from: CGPoint(x: x, y: y),
+        to: CGPoint(x: x2, y: y2),
+        hold: holdDuration,
+        move: moveDuration ?? Self.defaultSwipeMove,
+        rest: rest
+      ) {
+        return .performed
+      }
+    }
     let start = interactionCoordinate(app: app, x: x, y: y)
     let end = interactionCoordinate(app: app, x: x2, y: y2)
     if let moveDuration, moveDuration > 0 {
