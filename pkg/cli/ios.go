@@ -43,6 +43,9 @@ func CreateIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	// Phase 4 — devicelab driver branch. Mirrors --driver devicelab on Android.
 	// Routes to the XCUITest-based runner (pkg/driver/devicelab_ios) instead
 	// of WebDriverAgent. Simulator-only in Phase 4.
+	if strings.EqualFold(cfg.Driver, "devicelab-legacy") {
+		return createDevicelabLegacyIOSDriver(cfg)
+	}
 	if strings.EqualFold(cfg.Driver, "devicelab") {
 		return createDevicelabIOSDriver(cfg)
 	}
