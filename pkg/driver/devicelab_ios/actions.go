@@ -230,13 +230,20 @@ func scrollCoords(direction string, w, h int) (int, int, int, int, error) {
 	return 0, 0, 0, 0, fmt.Errorf("invalid scroll direction %q", direction)
 }
 
+// scrollDurationMs is Maestro's DEFAULT_SCROLL_DURATION (speed 40).
+const scrollDurationMs = 601
+
 func (d *Driver) scroll(direction string, speed int) *core.CommandResult {
 	w, h := d.screenSize(nil)
 	x1, y1, x2, y2, err := scrollCoords(direction, w, h)
 	if err != nil {
 		return core.ErrorResult(err, err.Error())
 	}
-	if err := d.swipeBetween(x1, y1, x2, y2, core.ScrollDurationOrDefault(speed, 400)); err != nil {
+	// Maestro's default scroll lasts 601ms (a 0.1s move, then still). With
+	// 400ms the list kept more fling: the same centre-to-10% drag moved DDG's
+	// debug list 682pt against Maestro's 488, past the row a centred
+	// scrollUntilVisible was after and under the navigation bar.
+	if err := d.swipeBetween(x1, y1, x2, y2, core.ScrollDurationOrDefault(speed, scrollDurationMs)); err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("scroll failed: %v", err))
 	}
 	return core.SuccessResult("scrolled "+strings.ToLower(direction), nil)

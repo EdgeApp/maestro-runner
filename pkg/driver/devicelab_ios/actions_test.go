@@ -611,3 +611,17 @@ func TestScrollUntilVisibleCenterStopsAtEndOfContent(t *testing.T) {
 		t.Fatalf("res = %+v, want success at the end of the content", res)
 	}
 }
+
+func TestScrollUsesMaestroDefaultDuration(t *testing.T) {
+	d, fa, _ := newTestDriver(t, screenOf())
+	if res := d.Execute(&flow.ScrollStep{Direction: "down"}); !res.Success {
+		t.Fatal(res.Message)
+	}
+	acts := fa.sent("act")
+	if len(acts) != 1 || acts[0].MoveMs == nil || acts[0].RestMs == nil {
+		t.Fatalf("acts = %+v", acts)
+	}
+	if got := *acts[0].MoveMs + *acts[0].RestMs; got != 601 {
+		t.Errorf("scroll gesture lasts %vms, want Maestro's 601", got)
+	}
+}
