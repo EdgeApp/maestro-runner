@@ -3,6 +3,9 @@ package flutter
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -40,6 +43,7 @@ type FlutterDriver struct {
 	udid          string          // iOS simulator UDID (empty for Android)
 	isIOS         bool            // true = iOS reconnection path
 	attempted     bool            // true after first discovery attempt (avoids retrying every step)
+	bundleChecked bool            // true once the installed app was checked for Flutter.framework
 	findTimeoutMs int             // current find timeout set by executor (0 = driver default)
 	ctx           context.Context // Parent context for element-finding operations (runFlow timeout)
 }
@@ -102,6 +106,17 @@ func (d *FlutterDriver) Execute(step flow.Step) *core.CommandResult {
 	sel := extractSelector(step)
 	if sel == nil || sel.IsEmpty() || (sel.Text == "" && sel.ID == "") {
 		return d.inner.Execute(step)
+	}
+
+	// An iOS simulator app without Flutter.framework is not Flutter: skip the
+	// VM discovery, which otherwise holds the first element step for ~2.4s
+	// until it gives up.
+	if !d.bundleChecked {
+		d.bundleChecked = true
+		if d.isIOS && d.client == nil && !isFlutterBundle(d.udid, d.appID) {
+			d.attempted = true
+			logger.Debug("Flutter: %s has no Flutter.framework; not searching the Flutter VM", d.appID)
+		}
 	}
 
 	// No Flutter available → inner only
@@ -677,3 +692,31 @@ func (d *FlutterDriver) DetectWebView() (*core.WebViewInfo, error) {
 
 // Inner returns the underlying driver for optional interface access.
 func (d *FlutterDriver) Inner() core.Driver { return d.inner }
+
+// appContainer returns the installed .app path of bundleID on a simulator;
+// tests replace it.
+var appContainer = func(udid, bundleID string) (string, error) {
+	out, err := exec.Command("xcrun", "simctl", "get_app_container", udid, bundleID, "app").Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// isFlutterBundle reports whether the app installed on the simulator ships
+// Flutter.framework. Every Flutter iOS app embeds it, so its absence proves
+// the app is not Flutter. When the bundle cannot be read (a real device, an
+// app not installed yet) it answers true, keeping the VM discovery.
+func isFlutterBundle(udid, bundleID string) bool {
+	if udid == "" || bundleID == "" {
+		return true
+	}
+	path, err := appContainer(udid, bundleID)
+	if err != nil || path == "" {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(path, "Frameworks", "Flutter.framework")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(path); err != nil {
+		return true
+	}
+	return false
+}
