@@ -66,6 +66,9 @@ func createDevicelabIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		return nil, nil, fmt.Errorf("DEVICELAB_IOS_RUNNER_ARTIFACTS_DIR points at %s but no Build/Products dir is present", artifactsDir)
 	}
 
+	// Before the runner and the app start, so both launch with them.
+	dliosdriver.ApplySimulatorPrefs(udid)
+
 	printSetupStep("Starting devicelab iOS runner...")
 	logger.Info("Launching devicelab-ios-runner from %s on simulator %s", artifactsDir, udid)
 	logger.Info("Runner log: %s", filepath.Join(artifactsDir, "logs", "runner.log"))

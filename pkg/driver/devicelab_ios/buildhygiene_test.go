@@ -128,3 +128,24 @@ func TestHostAppInstalled(t *testing.T) {
 		t.Error("an app not on the simulator was taken as installed")
 	}
 }
+
+func TestApplySimulatorPrefs(t *testing.T) {
+	f := &fakeSimctl{reply: func(args []string) (string, bool) {
+		return "denied", args[4] == "com.apple.WebUI"
+	}}
+	f.install(t)
+	ApplySimulatorPrefs("SIM")
+	want := "spawn SIM defaults write com.apple.Accessibility ReduceMotionEnabled -int 1|" +
+		"spawn SIM defaults write com.apple.WebUI AutoFillPasswords -int 0"
+	if got := strings.Join(f.joined(), "|"); got != want {
+		t.Errorf("calls = %q\nwant %q", got, want)
+	}
+
+	off := &fakeSimctl{}
+	off.install(t)
+	t.Setenv(SimPrefsEnv, "0")
+	ApplySimulatorPrefs("SIM")
+	if len(off.calls) != 0 {
+		t.Errorf("opted out, still wrote %q", off.joined())
+	}
+}
