@@ -247,3 +247,35 @@ func TestScrollUntilVisible_PicksTheMatchOnScreen(t *testing.T) {
 		t.Errorf("scrolls = %d, want 2", g.dragCount())
 	}
 }
+
+// A scroll holds only the runner's minimum before moving (a resting finger
+// taps the row under it), swipes from the centre to 10% from the edge, and
+// with a fast speed lets go at speed so the content flings.
+func TestScroll_NoHoldMaestroDistanceFlingWhenFast(t *testing.T) {
+	info := &core.PlatformInfo{ScreenWidth: 400, ScreenHeight: 800}
+	for _, tc := range []struct {
+		name      string
+		speed     int
+		wantPaced bool
+	}{
+		{"default pace", 0, true},
+		{"fast flings", 100, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, g := newGestureDriver(t, info, func(int) []SnapshotNode { return nil })
+			if res := d.handleScroll(&flow.ScrollStep{Direction: "down", Speed: tc.speed}); !res.Success {
+				t.Fatalf("scroll failed: %s", res.Message)
+			}
+			drag := g.lastDrag(t)
+			for k, v := range map[string]float64{"x": 200, "y": 400, "x2": 200, "y2": 80, "durationMs": scrollHoldMs} {
+				if got, _ := drag[k].(float64); got != v {
+					t.Errorf("%s = %v, want %v", k, drag[k], v)
+				}
+			}
+			_, paced := drag["moveDurationMs"]
+			if paced != tc.wantPaced {
+				t.Errorf("moveDurationMs present = %v, want %v", paced, tc.wantPaced)
+			}
+		})
+	}
+}

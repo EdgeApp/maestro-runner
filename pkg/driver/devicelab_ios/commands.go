@@ -734,34 +734,34 @@ func (d *Driver) handleScroll(s *flow.ScrollStep) *core.CommandResult {
 	if w == 0 || h == 0 {
 		return core.ErrorResult(fmt.Errorf("screen size not available"), "screen size unknown")
 	}
-	centerX := float64(w) / 2
-	centerY := float64(h) / 2
-	dist := float64(h) / 3
+	// Like Maestro's iOS driver: from the centre to 10% from the edge.
+	fw, fh := float64(w), float64(h)
+	centerX, centerY := fw/2, fh/2
 	var fromX, fromY, toX, toY float64
 	switch strings.ToLower(s.Direction) {
 	case "up":
-		fromX, fromY = centerX, centerY-dist/2
-		toX, toY = centerX, centerY+dist/2
+		fromX, fromY, toX, toY = centerX, centerY, centerX, fh*0.9
 	case "down":
-		fromX, fromY = centerX, centerY+dist/2
-		toX, toY = centerX, centerY-dist/2
+		fromX, fromY, toX, toY = centerX, centerY, centerX, fh*0.1
 	case "left":
-		fromX, fromY = centerX-dist/2, centerY
-		toX, toY = centerX+dist/2, centerY
+		fromX, fromY, toX, toY = centerX, centerY, fw*0.9, centerY
 	case "right":
-		fromX, fromY = centerX+dist/2, centerY
-		toX, toY = centerX-dist/2, centerY
+		fromX, fromY, toX, toY = centerX, centerY, fw*0.1, centerY
 	default:
 		return core.ErrorResult(fmt.Errorf("invalid direction: %s", s.Direction), "invalid scroll direction")
 	}
-	durationMs := 300.0
-	// moveDurationMs routes the drag through the runner's velocity path, which
-	// holds still 250ms before lifting. Without it, XCUITest's press-then-drag
-	// releases mid-motion and the list keeps decelerating — and iOS spends the
-	// NEXT tap stopping that scroll instead of activating anything, so a
-	// tap-after-scroll silently no-ops (the Android drivers learned the same
-	// lesson; their agent swipes hold still too).
-	moveDurationMs := 300.0
+	// durationMs is the hold before the move. Keep it at the runner's
+	// minimum: a finger resting on a row is a tap on that row (a settings
+	// list opened a link mid-scroll).
+	durationMs := scrollHoldMs
+	// A fast scroll (speed near 100) lets go at speed so the content flings,
+	// as Maestro's does; otherwise the runner moves at a set pace and holds
+	// at the end, so the scroll travels the swipe and no further.
+	var moveDurationMs *float64
+	if ms := core.ScrollDurationOrDefault(s.Speed, scrollControlledMs); ms >= scrollControlledMs {
+		m := float64(scrollControlledMs)
+		moveDurationMs = &m
+	}
 	ctx, cancel := d.callTimeout()
 	defer cancel()
 	if _, err := d.client.Call(ctx, Command{
@@ -772,12 +772,19 @@ func (d *Driver) handleScroll(s *flow.ScrollStep) *core.CommandResult {
 		X2:             ptrFloat(toX),
 		Y2:             ptrFloat(toY),
 		DurationMs:     &durationMs,
-		MoveDurationMs: &moveDurationMs,
+		MoveDurationMs: moveDurationMs,
 	}); err != nil {
 		return core.ErrorResult(err, "scroll failed: "+err.Error())
 	}
 	return core.SuccessResult(fmt.Sprintf("scrolled %s", s.Direction), nil)
 }
+
+// Scroll gesture timing: the hold before the move (the runner's minimum),
+// and the paced move a scroll without a fast speed uses.
+const (
+	scrollHoldMs       = 16.0
+	scrollControlledMs = 300
+)
 
 // handleScrollUntilVisible scrolls in the chosen direction until the
 // target element appears or the budget runs out.
