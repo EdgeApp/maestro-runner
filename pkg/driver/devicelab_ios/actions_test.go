@@ -549,3 +549,20 @@ func TestInputTextRetapsWhenNothingHasFocus(t *testing.T) {
 		t.Error("inputText with nothing focused and no previous tap should fail")
 	}
 }
+
+// An optional assertVisible still fails when the element is absent: the
+// executor checks `when: visible` with one, and a success made every such
+// condition true.
+func TestOptionalAssertVisibleFailsWhenAbsent(t *testing.T) {
+	d, _, _ := newTestDriver(t, screenOf(node(1, "Button", "Other", 0, 0, 100, 40)))
+	step := &flow.AssertVisibleStep{Selector: flow.Selector{Text: "Agree and Continue"}}
+	step.Optional = true
+	step.TimeoutMs = 50
+	if r := d.Execute(step); r.Success {
+		t.Fatal("optional assertVisible of an absent element must fail")
+	}
+	step.Selector.Text = "Other"
+	if r := d.Execute(step); !r.Success {
+		t.Fatalf("present element: %s", r.Message)
+	}
+}

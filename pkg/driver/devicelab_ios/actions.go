@@ -338,9 +338,15 @@ func (d *Driver) assertVisible(s *flow.AssertVisibleStep) *core.CommandResult {
 	if s.Count != "" {
 		return d.assertCount(s)
 	}
+	// Not found is a failure even when the step is optional: the executor
+	// turns a failed optional step into a warning itself, and it checks a
+	// `when: visible` condition with an optional assert, so answering
+	// success here made every such condition true (DDG ran the "Agree and
+	// Continue" block with no consent screen on it). Optional only shortens
+	// the wait, as in the WDA driver.
 	node, _, err := d.findElement(s.Selector, s.Optional, s.TimeoutMs)
 	if err != nil {
-		return notFound(err, s.Optional, "assertVisible")
+		return core.ErrorResult(err, fmt.Sprintf("Element not visible: %v", err))
 	}
 	return core.SuccessResult("visible: "+describe(s.Selector), toElementInfo(node))
 }
