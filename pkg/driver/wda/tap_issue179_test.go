@@ -276,3 +276,34 @@ func swipeBody(body []byte) []byte {
 	b, _ := json.Marshal(swipePayload(body))
 	return b
 }
+
+// A SwiftUI Toggle is a row-wide switch holding the real switch, both with
+// the same id; the inner one is the one to tap, as Maestro's deepest match.
+func TestIDPrefersInnermostOfNestedMatches(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		p := r.URL.Path
+		switch {
+		case strings.HasSuffix(p, "/elements"):
+			jsonResponse(w, map[string]interface{}{"value": []map[string]interface{}{{"ELEMENT": "row"}, {"ELEMENT": "switch"}}})
+		case strings.Contains(p, "/element/row/rect"):
+			jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"x": 20, "y": 160, "width": 353, "height": 44}})
+		case strings.Contains(p, "/element/switch/rect"):
+			jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"x": 296, "y": 166, "width": 57, "height": 32}})
+		case strings.HasSuffix(p, "/displayed"):
+			jsonResponse(w, map[string]interface{}{"value": true})
+		default:
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		}
+	}))
+	defer server.Close()
+	d := createTestDriver(server)
+
+	info, err := d.findElementByWDA(flow.Selector{ID: "AutoclearEnabledToggle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ID != "switch" {
+		t.Errorf("picked %q, want the inner switch", info.ID)
+	}
+}

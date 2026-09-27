@@ -1052,8 +1052,14 @@ const maxIDCandidates = 5
 // While a push animates, the outgoing screen and the incoming one both hold
 // an element with the same id, and the outgoing copy comes first in tree
 // order; taking it tapped the screen being left (#179).
+//
+// Of the displayed ones, an element that contains another match is skipped
+// for the one inside it, as Maestro takes the deepest match: a SwiftUI
+// Toggle is a row-wide switch holding the real switch, both with the same
+// id, and the row's centre is its label, where a tap flips nothing.
 func (d *Driver) onScreenOf(ids []string) (*core.ElementInfo, error) {
 	var fallback *core.ElementInfo
+	var visible []*core.ElementInfo
 	var lastErr error
 	for i, id := range ids {
 		if i == maxIDCandidates {
@@ -1065,16 +1071,44 @@ func (d *Driver) onScreenOf(ids []string) (*core.ElementInfo, error) {
 			continue
 		}
 		if info.Visible {
-			return info, nil
+			visible = append(visible, info)
+			continue
 		}
 		if fallback == nil {
 			fallback = info
 		}
 	}
+	if len(visible) > 0 {
+		return deepestOf(visible), nil
+	}
 	if fallback != nil {
 		return fallback, nil
 	}
 	return nil, lastErr
+}
+
+// deepestOf returns the first element that contains none of the others:
+// bounds containment stands in for ancestry, which the element API does not
+// expose.
+func deepestOf(infos []*core.ElementInfo) *core.ElementInfo {
+	for _, a := range infos {
+		inner := false
+		for _, b := range infos {
+			if a != b && a.Bounds != b.Bounds && contains(a.Bounds, b.Bounds) {
+				inner = true
+				break
+			}
+		}
+		if !inner {
+			return a
+		}
+	}
+	return infos[0]
+}
+
+// contains reports whether b lies entirely within a.
+func contains(a, b core.Bounds) bool {
+	return b.X >= a.X && b.Y >= a.Y && b.X+b.Width <= a.X+a.Width && b.Y+b.Height <= a.Y+a.Height
 }
 
 // findElementRelativeWithContext handles relative selectors with context-based timeout.
