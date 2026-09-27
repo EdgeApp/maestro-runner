@@ -106,6 +106,12 @@ func pick(sc *screen, sel flow.Selector) (*Node, error) {
 		return nil, errNotFound
 	}
 	if sel.Index != "" {
+		// Maestro drops the matches that contain another match (deepest
+		// wins) before applying the index. Indexing the raw list picked a
+		// switch row (label and control share a value) over the switch inside
+		// it, and the tap on the row's centre hit the label: DDG's
+		// Application Lock never turned on.
+		matches = innermost(matches)
 		i, err := strconv.Atoi(strings.TrimSpace(sel.Index))
 		if err != nil {
 			return nil, fmt.Errorf("index %q is not a number", sel.Index)
@@ -200,12 +206,7 @@ func deepest(matches []Node, sel flow.Selector) []Node {
 		if sel.Text != "" {
 			rs[i].exact = core.MatchSelectorTextExactCase(sel.Text, texts(m)...)
 		}
-		for j, o := range matches {
-			if i != j && contains(m, o) && !sameFrame(m, o) {
-				rs[i].outer = true
-				break
-			}
-		}
+		rs[i].outer = containsOther(matches, i)
 	}
 	sort.SliceStable(rs, func(a, b int) bool {
 		if rs[a].exact != rs[b].exact {
@@ -398,4 +399,26 @@ func abs(v int) int {
 		return -v
 	}
 	return v
+}
+
+// innermost keeps, in tree order, the matches that contain no other match.
+func innermost(matches []Node) []Node {
+	out := make([]Node, 0, len(matches))
+	for i, m := range matches {
+		if !containsOther(matches, i) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// containsOther reports whether matches[i] contains another match with a
+// different frame, i.e. is an ancestor Maestro's deepest-match rule drops.
+func containsOther(matches []Node, i int) bool {
+	for j, o := range matches {
+		if i != j && contains(matches[i], o) && !sameFrame(matches[i], o) {
+			return true
+		}
+	}
+	return false
 }

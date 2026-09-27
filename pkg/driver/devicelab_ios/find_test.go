@@ -165,3 +165,30 @@ func TestToElementInfoAndDescribe(t *testing.T) {
 		t.Fatal("value before label")
 	}
 }
+
+// With an index, matches that contain another match are dropped first, as
+// Maestro does: a switch row and the switch inside it share the value "0",
+// and index 0 must be the switch, not the row whose centre is its label.
+func TestIndexAppliesToInnermostMatches(t *testing.T) {
+	row := node(1, "Switch", "Application Lock", 20, 160, 353, 44)
+	row.Value = "0"
+	inner := node(2, "Switch", "", 296, 166, 57, 32)
+	inner.Value = "0"
+	other := node(3, "Switch", "Other", 20, 260, 353, 44)
+	other.Value = "0"
+	sc := &screen{nodes: []Node{row, inner, other}, width: 400, height: 800}
+	got, err := pick(sc, flow.Selector{Text: "0", Index: "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.I != 2 {
+		t.Errorf("index 0 picked node %d, want the inner switch (2)", got.I)
+	}
+	got, err = pick(sc, flow.Selector{Text: "0", Index: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.I != 3 {
+		t.Errorf("index 1 picked node %d, want the next innermost match (3)", got.I)
+	}
+}
