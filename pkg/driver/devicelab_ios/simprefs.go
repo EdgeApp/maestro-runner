@@ -20,7 +20,8 @@ type simPref struct {
 var simPrefs = []simPref{
 	// Crossfades instead of slide transitions: shorter animations to settle.
 	{"com.apple.Accessibility", "ReduceMotionEnabled", "-int", "1", "Reduce Motion on"},
-	// No "Save password?" sheet over login flows.
+	// No "Save password?" sheet over login flows. Appium's key; not yet
+	// checked against an iOS 26 simulator (an unknown key is inert).
 	{"com.apple.WebUI", "AutoFillPasswords", "-int", "0", "password AutoFill off"},
 }
 
