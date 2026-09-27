@@ -1,0 +1,27 @@
+{
+  "version": "e9d8108",
+  "protocol": "1.0",
+  "xcode": "Xcode 27.0",
+  "runnerBundleId": "dev.devicelab.agent.uitests.xctrunner",
+  "hostBundleId": "dev.devicelab.agent",
+  "files": {
+    "agent.xctestrun": "45b704ea6a432fef69461223a1de91e381743cb9413e082db7f2966283beea75",
+    "DevicelabIOSAgent.app/DevicelabIOSAgent": "040b94835daf0ed54fb2552480c6b5cd8aa95c61120397d133e575bac5476236",
+    "DevicelabIOSAgent.app/Info.plist": "fb24623578ba259bba1a48d0bb75e44903ff5117c6525a8adc0a01ec29d8f380",
+    "DevicelabIOSAgent.app/PkgInfo": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0",
+    "DevicelabIOSAgentUITests-Runner.app/DevicelabIOSAgentUITests-Runner": "d776d95c3da519cf802b9e58794802128cd158160db68471c703005522b37337",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/_Testing_Foundation.framework/_CodeSignature/CodeResources": "28ce3b5ac327b5b77c1921fc1fdbd1bbd5fc0bad2cb6b1d53ae7dcdfde24e4c6",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/_Testing_Foundation.framework/_Testing_Foundation": "822abce332b04ae629c2e11094b16aea993503fc356bfba90226a22b10ac2881",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/_Testing_Foundation.framework/Info.plist": "ee1ceee1b8f093f36892e898e5cf6b7c025fc80a27f9f367a5a42ebe347c3203",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/_Testing_Foundation.framework/Modules/_Testing_Foundation.swiftmodule/arm64-apple-ios-simulator.swiftdoc": "f74e4e0497d31eec4cdef231ae67a094bf962ba04178c1d8b60df19030497556",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/_Testing_Foundation.framework/Modules/_Testing_Foundation.swiftmodule/arm64-apple-ios-simulator.swiftinterface": "204418748f31c46392c518d346110a83c8fb5c8a9f9b39ab9b393bf1e5802f65",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/_Testing_Foundation.framework/Modules/_Testing_Foundation.swiftmodule/x86_64-apple-ios-simulator.swiftdoc": "0cbdc6b72fbebddfa18599e819fc1517ce7a6e92a6bdd6c40b29d29a6f0d6c48",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/_Testing_Foundation.framework/Modules/_Testing_Foundation.swiftmodule/x86_64-apple-ios-simulator.swiftinterface": "b978cfb89ac980f2af3134cc44327e1ebd8850d6a56a3da19c467f5355a825f6",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/_Testing_Foundation.framework/version.plist": "0d6de3b591bf52bced98bbec40dfd39e0094dbfbca453d4635cbdc546e590808",
+    "DevicelabIOSAgentUITests-Runner.app/Frameworks/lib_TestingInterop.dylib": "00ea3ad1da01be047bc2b4412ad6e72e522583aa80f6d3b637b814c1796ebbdf",
+    "DevicelabIOSAgentUITests-Runner.app/Info.plist": "db45280229a22ebbda188c44e0b97d8ba049d65c2373a1b11b4c5b61525014a0",
+    "DevicelabIOSAgentUITests-Runner.app/PkgInfo": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0",
+    "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest/DevicelabIOSAgentUITests": "435ba9240ec15a732b6d607099d6178173588326c87cb575b14e811078a6ded4",
+    "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest/Info.plist": "aebd82b9757c778b79a8bcab2da2bece3caf49d4319c0284591d06e9a09ea253"
+  }
+}
