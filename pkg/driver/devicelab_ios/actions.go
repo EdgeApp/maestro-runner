@@ -265,12 +265,28 @@ func (d *Driver) scrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.Comman
 	if direction == "" {
 		direction = "down"
 	}
+	// centerElement, as in Maestro: an element on screen keeps the scroll
+	// going until it is near the middle, for at most maxCenterScrolls extra
+	// scrolls (the list may end first). DDG's "Passwords" menu item sat under
+	// the home indicator at the bottom edge, and a tap there never reached it.
+	const maxCenterScrolls = 4
+	centerScrolls := 0
+	var shown *Node // on screen and visible enough, though not yet centred
 	for i := 0; ; i++ {
 		sc, err := d.lookup(s.Element, i > 0)
 		if err == nil {
 			if node, perr := pick(sc, s.Element); perr == nil {
 				w, h := d.screenSize(sc)
-				if core.MeetsVisibility(bounds(*node), w, h, s.VisibilityPercentage) {
+				b := bounds(*node)
+				if s.CenterElement && core.VisibleFraction(b, w, h) > 0.1 && centerScrolls <= maxCenterScrolls {
+					if core.NearScreenCenter(b, w, h, direction) {
+						return core.SuccessResult("element centred after scrolling", toElementInfo(node))
+					}
+					centerScrolls++
+					if core.MeetsVisibility(b, w, h, s.VisibilityPercentage) {
+						shown = node
+					}
+				} else if core.MeetsVisibility(b, w, h, s.VisibilityPercentage) {
 					return core.SuccessResult("element visible after scrolling", toElementInfo(node))
 				}
 			}
@@ -283,6 +299,9 @@ func (d *Driver) scrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.Comman
 		}
 		if resp, err := d.call("settle", &Args{TimeoutMs: float64(defaultSettleTimeout.Milliseconds())}); err == nil {
 			if sig := resp.payload().ScreenHash; sig != "" && progress.Observe(sig) {
+				if shown != nil {
+					return core.SuccessResult("element visible at the end of the content", toElementInfo(shown))
+				}
 				err := fmt.Errorf("%s not visible: scrolling %s made no progress after %d scrolls (end of content?)",
 					describe(s.Element), direction, i+1)
 				return core.ErrorResult(err, err.Error())

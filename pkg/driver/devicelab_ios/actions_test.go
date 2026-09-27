@@ -566,3 +566,48 @@ func TestOptionalAssertVisibleFailsWhenAbsent(t *testing.T) {
 		t.Fatalf("present element: %s", r.Message)
 	}
 }
+
+func TestScrollUntilVisibleCentersElement(t *testing.T) {
+	// Fully visible at the bottom edge first; centerElement keeps scrolling
+	// until its centre is above 400+160 on an 800pt screen.
+	var scrolls atomic.Int32
+	d, _, _ := newTestDriver(t, func(cmd string, _ Args) (*Response, error) {
+		switch cmd {
+		case "act":
+			scrolls.Add(1)
+		case "find":
+			y := 770 - 150*float64(scrolls.Load())
+			return tree(node(1, "StaticText", "Passwords", 84, y, 82, 20)), nil
+		case "settle":
+			return ok(&Payload{ScreenHash: "h" + string(rune('a'+scrolls.Load()))}), nil
+		}
+		return ok(nil), nil
+	})
+	res := d.Execute(&flow.ScrollUntilVisibleStep{Element: flow.Selector{Text: "Passwords"}, CenterElement: true})
+	if !res.Success || scrolls.Load() != 2 {
+		t.Fatalf("res=%+v scrolls=%d, want success after 2 scrolls", res, scrolls.Load())
+	}
+	scrolls.Store(0)
+	res = d.Execute(&flow.ScrollUntilVisibleStep{Element: flow.Selector{Text: "Passwords"}})
+	if !res.Success || scrolls.Load() != 0 {
+		t.Fatalf("without centerElement: res=%+v scrolls=%d, want success without scrolling", res, scrolls.Load())
+	}
+}
+
+func TestScrollUntilVisibleCenterStopsAtEndOfContent(t *testing.T) {
+	// The last item of a list cannot reach the middle: the screen stops
+	// moving and the visible element still counts, as in Maestro.
+	d, _, _ := newTestDriver(t, func(cmd string, _ Args) (*Response, error) {
+		switch cmd {
+		case "find":
+			return tree(node(1, "StaticText", "Last", 84, 770, 82, 20)), nil
+		case "settle":
+			return ok(&Payload{ScreenHash: "same"}), nil
+		}
+		return ok(nil), nil
+	})
+	res := d.Execute(&flow.ScrollUntilVisibleStep{Element: flow.Selector{Text: "Last"}, CenterElement: true})
+	if !res.Success {
+		t.Fatalf("res = %+v, want success at the end of the content", res)
+	}
+}

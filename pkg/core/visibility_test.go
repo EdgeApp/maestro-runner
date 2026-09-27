@@ -141,3 +141,30 @@ func TestScrollDurationOrDefault(t *testing.T) {
 		t.Errorf("explicit speed 40 should be upstream's 601, got %d", got)
 	}
 }
+
+func TestNearScreenCenter(t *testing.T) {
+	// DDG's browsing menu: "Passwords" at the bottom edge of an 852pt screen.
+	bottom := Bounds{X: 84, Y: 823, Width: 82, Height: 20}
+	middle := Bounds{X: 84, Y: 335, Width: 82, Height: 20}
+	top := Bounds{X: 84, Y: 20, Width: 82, Height: 20}
+	for _, c := range []struct {
+		name string
+		b    Bounds
+		dir  string
+		want bool
+	}{
+		{"down, at the bottom", bottom, "down", false},
+		{"down, near the middle", middle, "DOWN", true},
+		{"down is the default", bottom, "", false},
+		{"up, at the top", top, "up", false},
+		{"up, near the middle", middle, "up", true},
+		{"right, far left", Bounds{X: 0, Y: 400, Width: 20, Height: 20}, "right", true},
+		{"right, far right", Bounds{X: 370, Y: 400, Width: 20, Height: 20}, "right", false},
+		{"left, far left", Bounds{X: 0, Y: 400, Width: 20, Height: 20}, "left", false},
+		{"left, far right", Bounds{X: 370, Y: 400, Width: 20, Height: 20}, "left", true},
+	} {
+		if got := NearScreenCenter(c.b, 393, 852, c.dir); got != c.want {
+			t.Errorf("%s: NearScreenCenter = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
