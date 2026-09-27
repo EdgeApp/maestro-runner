@@ -222,7 +222,11 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 		d.settle(defaultSettleTimeout)
 	}
 	d.screenMayMove = movesScreen(step)
-	d.prevTap, d.lastTap = d.lastTap, nil
+	// Waits and asserts between "tapOn field" and "inputText" keep the tap
+	// point: only a step that acts on or moves the screen starts a new one.
+	if actsOnScreen(step) || movesScreen(step) {
+		d.prevTap, d.lastTap = d.lastTap, nil
+	}
 	result := d.execute(step)
 	if result == nil {
 		result = core.ErrorResult(fmt.Errorf("no result"), "step produced no result")

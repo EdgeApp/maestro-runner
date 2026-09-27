@@ -531,6 +531,8 @@ func TestInputTextRetapsWhenNothingHasFocus(t *testing.T) {
 	if r := d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Username"}}); !r.Success {
 		t.Fatalf("tap failed: %s", r.Message)
 	}
+	// A wait between the tap and the typing keeps the tap point.
+	d.Execute(&flow.WaitForAnimationToEndStep{})
 	if r := d.Execute(&flow.InputTextStep{Text: "a"}); !r.Success {
 		t.Fatalf("inputText failed: %s", r.Message)
 	}
