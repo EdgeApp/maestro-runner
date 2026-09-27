@@ -99,11 +99,37 @@ final class RunnerTests: XCTestCase {
 
   // MARK: - XCTest Entry
 
+  override class func setUp() {
+    // WDA's runner defaults: no XCTest screenshots or diagnostic screen
+    // recordings per action, local query evaluation, no autocorrect or
+    // predictive text, keyboard intros dismissed, and XCTest's own alert
+    // handling off (the runner handles alerts itself).
+    DLApplyRunnerDefaults()
+    super.setUp()
+  }
+
   override func setUp() {
     continueAfterFailure = true
+    // XCTest halts a test that "receives control" late (testmanagerd slow to
+    // connect), which stopped the runner; keep it running (WDA PR #664).
+    let halt = NSSelectorFromString("setShouldHaltWhenReceivesControl:")
+    if responds(to: halt) {
+      setValue(NSNumber(value: false), forKey: "shouldHaltWhenReceivesControl")
+    }
+    let resetHalt = NSSelectorFromString("setShouldSetShouldHaltWhenReceivesControl:")
+    if responds(to: resetHalt) {
+      setValue(NSNumber(value: false), forKey: "shouldSetShouldHaltWhenReceivesControl")
+    }
     // Override XCTest's clipped snapshot request params so element trees are
     // complete on deep React Native hierarchies (matches WDA / devicekit-ios).
     DLApplyCompleteSnapshotParams()
+  }
+
+  // An XCTest issue (a failed query, an assertion inside XCTest) is logged,
+  // never recorded: recording one ended the long-running test, and with it
+  // the runner, e.g. when a keyboard `.exists` query failed mid-command.
+  override func record(_ issue: XCTIssue) {
+    NSLog("DL_XCTEST_ISSUE type=%d %@", issue.type.rawValue, issue.compactDescription)
   }
 
   @MainActor

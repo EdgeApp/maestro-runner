@@ -98,8 +98,13 @@ extension RunnerTests {
 
     do {
       let command = try JSONDecoder().decode(Command.self, from: data)
-      let response = try execute(command: command)
-      return (jsonResponse(status: 200, response: response), command.command == .shutdown)
+      let started = CACurrentMediaTime()
+      var response = try execute(command: command)
+      let elapsedMs = (CACurrentMediaTime() - started) * 1000
+      response.serverMs = (elapsedMs * 10).rounded() / 10
+      let encoded = jsonResponse(status: 200, response: response)
+      NSLog("DL_CMD cmd=%@ ms=%.1f bytes=%d ok=%d", command.command.rawValue, elapsedMs, encoded.count, response.ok ? 1 : 0)
+      return (encoded, command.command == .shutdown)
     } catch {
       return (
         jsonResponse(status: 500, response: Response(ok: false, error: ErrorPayload(message: "\(error)"))),

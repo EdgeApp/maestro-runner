@@ -118,6 +118,9 @@ struct Response: Codable {
   let ok: Bool
   let data: DataPayload?
   let error: ErrorPayload?
+  // Time the runner spent executing the command, stamped by the transport,
+  // so the host can split a slow step into runner work and round trip.
+  var serverMs: Double?
 
   init(ok: Bool, data: DataPayload? = nil, error: ErrorPayload? = nil) {
     self.ok = ok

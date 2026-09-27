@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
 // Client is the HTTP transport to the on-device runner. agent-device's
@@ -298,8 +300,10 @@ func (c *Client) sendOnce(ctx context.Context, baseURL string, body []byte) (*Re
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		logCall(body, nil, time.Since(start), err)
 		return nil, classifyRequestError(ctx, reqCtx, err, transportError{err})
 	}
 	defer resp.Body.Close()
@@ -308,7 +312,33 @@ func (c *Client) sendOnce(ctx context.Context, baseURL string, body []byte) (*Re
 	if err != nil {
 		return nil, classifyRequestError(ctx, reqCtx, err, fmt.Errorf("read runner response: %w", err))
 	}
-	return decodeEnvelope(raw)
+	data, derr := decodeEnvelope(raw)
+	logCall(body, raw, time.Since(start), derr)
+	return data, derr
+}
+
+// logCall records one runner round trip: the command, the host-side time,
+// the runner's own time (serverMs, when it reports one), and the sizes, so a
+// slow step can be split into transport, runner work and payload.
+func logCall(body, raw []byte, elapsed time.Duration, err error) {
+	var cmd struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(body, &cmd)
+	var env struct {
+		ServerMs *float64 `json:"serverMs"`
+	}
+	_ = json.Unmarshal(raw, &env)
+	server := "-"
+	if env.ServerMs != nil {
+		server = fmt.Sprintf("%.0fms", *env.ServerMs)
+	}
+	status := "ok"
+	if err != nil {
+		status = "err=" + err.Error()
+	}
+	logger.Debug("[devicelab-ios] runner %s %dms server=%s req=%dB resp=%dB %s",
+		cmd.Command, elapsed.Milliseconds(), server, len(body), len(raw), status)
 }
 
 // classifyRequestError attributes a failed request. If the caller's ctx
