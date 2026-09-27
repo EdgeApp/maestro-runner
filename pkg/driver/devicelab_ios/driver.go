@@ -61,6 +61,9 @@ type Driver struct {
 	// lastSnapshotAppState is the target app's state from the most recent
 	// snapshot reply, including a SNAPSHOT_FAILED one, which carries it.
 	lastSnapshotAppState string
+	// lastSnapshotTruncated is true when the most recent snapshot hit the
+	// runner's node budget, so a missing match may just be past the cap.
+	lastSnapshotTruncated bool
 
 	// runnerTimeouts counts steps in a row whose runner call waited out its
 	// deadline; see noteRunnerTimeout.

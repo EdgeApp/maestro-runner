@@ -221,7 +221,7 @@ func toElementInfo(n *SnapshotNode) *core.ElementInfo {
 			Width:  int(round(n.Rect.Width)),
 			Height: int(round(n.Rect.Height)),
 		},
-		Visible:  isDisplayed(n),
+		Visible:  n.Rect.Width > 0 && n.Rect.Height > 0,
 		Enabled:  n.Enabled,
 		Focused:  n.Focused,
 		Selected: n.Selected,

@@ -9,8 +9,9 @@ static void DLConfigureKeyboardPreferences(void)
 {
   void *handle = dlopen("/System/Library/PrivateFrameworks/TextInput.framework/TextInput", RTLD_LAZY);
   Class controllerClass = NSClassFromString(@"TIPreferencesController");
-  id controller = [controllerClass respondsToSelector:@selector(sharedPreferencesController)]
-    ? [controllerClass performSelector:@selector(sharedPreferencesController)]
+  SEL shared = NSSelectorFromString(@"sharedPreferencesController");
+  id controller = [controllerClass respondsToSelector:shared]
+    ? ((id (*)(id, SEL))[controllerClass methodForSelector:shared])(controllerClass, shared)
     : nil;
   SEL setPref = NSSelectorFromString(@"setValue:forPreferenceKey:");
   if (controller != nil && [controller respondsToSelector:setPref]) {

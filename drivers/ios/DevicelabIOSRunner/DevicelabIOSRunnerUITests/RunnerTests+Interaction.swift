@@ -455,58 +455,49 @@ extension RunnerTests {
     // tree-signature, flat node list) in a single pass. We accumulate
     // hash bits into a Hasher as we visit each node and collect matches
     // along the way.
+    // walkOnce returns the best on-screen match and the tree signature. Only
+    // a match whose centre is on screen, with at least 10% of it visible,
+    // counts: a web page parks copies of a link off the edge, and tapping
+    // one of those "succeeded" while touching nothing. A miss sends no tree
+    // back — the Go side re-reads its own (visible-only) snapshot anyway.
     func walkOnce(root: XCUIElementSnapshot) -> (XCUIElementSnapshot?, UInt64, [SnapshotNode]) {
       var hasher = Hasher()
-      var allNodes: [SnapshotNode] = []
       var matches: [(XCUIElementSnapshot, Int, Int)] = []
+      let viewport = root.children.first {
+        $0.elementType == .window && !$0.frame.isNull && !$0.frame.isEmpty
+      }?.frame ?? root.frame
 
-      func walk(_ snap: XCUIElementSnapshot, depth: Int, parentIdx: Int?) {
+      func walk(_ snap: XCUIElementSnapshot) {
+        let frame = snap.frame
         // Tree-signature contribution: geometry + identity bits.
         hasher.combine(snap.elementType.rawValue)
         hasher.combine(snap.identifier)
         hasher.combine(snap.label)
-        hasher.combine(Int(snap.frame.origin.x))
-        hasher.combine(Int(snap.frame.origin.y))
-        hasher.combine(Int(snap.frame.size.width))
-        hasher.combine(Int(snap.frame.size.height))
+        hasher.combine(Int(frame.origin.x))
+        hasher.combine(Int(frame.origin.y))
+        hasher.combine(Int(frame.size.width))
+        hasher.combine(Int(frame.size.height))
 
-        // Match-candidate collection + flat-node serialisation.
-        let label = snap.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        let identifier = snap.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        let valueText = String(describing: snap.value ?? "")
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        let nodeIdx = allNodes.count
-        allNodes.append(SnapshotNode(
-          index: nodeIdx,
-          type: elementTypeName(snap.elementType),
-          label: label.isEmpty ? nil : label,
-          identifier: identifier.isEmpty ? nil : identifier,
-          value: valueText.isEmpty ? nil : valueText,
-          placeholderValue: nil,
-          rect: snapshotRect(from: snap.frame),
-          enabled: snap.isEnabled,
-          focused: nil,
-          selected: snap.isSelected ? true : nil,
-          hittable: false,
-          depth: depth,
-          parentIndex: parentIdx,
-          hiddenContentAbove: nil,
-          hiddenContentBelow: nil
-        ))
-        if let kind = nodeMatchKind(label: label, identifier: identifier, valueText: valueText) {
-          if !snap.frame.isNull && !snap.frame.isEmpty {
+        let onScreen = viewport.contains(CGPoint(x: frame.midX, y: frame.midY))
+          && Self.visibleFraction(frame, in: viewport) >= Self.minVisibleFraction
+        if onScreen {
+          let label = snap.label.trimmingCharacters(in: .whitespacesAndNewlines)
+          let identifier = snap.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+          let valueText = String(describing: snap.value ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+          if let kind = nodeMatchKind(label: label, identifier: identifier, valueText: valueText) {
             matches.append((snap, kind, typeRank(snap.elementType)))
           }
         }
         for child in snap.children {
-          walk(child, depth: depth + 1, parentIdx: nodeIdx)
+          walk(child)
         }
       }
-      walk(root, depth: 0, parentIdx: nil)
+      walk(root)
 
       matches.sort { ($0.1, $0.2) < ($1.1, $1.2) }
       let sig = UInt64(bitPattern: Int64(hasher.finalize()))
-      return (matches.first?.0, sig, allNodes)
+      return (matches.first?.0, sig, [])
     }
 
     let started = Date()

@@ -13,6 +13,7 @@ import (
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
 // executeStep dispatches a maestro flow step to the right handler. The
@@ -365,7 +366,7 @@ func (d *Driver) handleAssertVisible(s *flow.AssertVisibleStep) *core.CommandRes
 	if err != nil {
 		return core.ErrorResult(err, "assertVisible: "+err.Error())
 	}
-	if node == nil || !isDisplayed(node) {
+	if node == nil || !d.isDisplayed(node) {
 		return core.ErrorResult(fmt.Errorf("element not visible"), "element not visible")
 	}
 	return core.SuccessResult("visible", toElementInfo(node))
@@ -395,7 +396,7 @@ func (d *Driver) assertVisibleCount(s *flow.AssertVisibleStep, want int) *core.C
 		if err != nil && !isSnapshotFailure(err) {
 			return core.ErrorResult(err, "assertVisible: "+err.Error())
 		}
-		got = countDisplayed(nodes)
+		got = d.countDisplayed(nodes)
 		if got == want {
 			return core.SuccessResult(fmt.Sprintf("%d visible", got), nil)
 		}
@@ -413,10 +414,10 @@ func (d *Driver) assertVisibleCount(s *flow.AssertVisibleStep, want int) *core.C
 }
 
 // countDisplayed returns how many of the nodes are visible on screen.
-func countDisplayed(nodes []SnapshotNode) int {
+func (d *Driver) countDisplayed(nodes []SnapshotNode) int {
 	count := 0
 	for i := range nodes {
-		if isDisplayed(&nodes[i]) {
+		if d.isDisplayed(&nodes[i]) {
 			count++
 		}
 	}
@@ -432,7 +433,7 @@ func (d *Driver) handleAssertNotVisible(s *flow.AssertNotVisibleStep) *core.Comm
 		}
 		nodes, err := d.snapshotMatching(s.Selector)
 		if err == nil {
-			if countDisplayed(nodes) > 0 {
+			if d.countDisplayed(nodes) > 0 {
 				return core.ErrorResult(fmt.Errorf("element unexpectedly visible"), "element visible")
 			}
 			return core.SuccessResult("not visible", nil)
@@ -811,7 +812,7 @@ func (d *Driver) handleScrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.
 
 	for i := 0; i < maxScrolls && time.Now().Before(deadline); i++ {
 		node, err := d.scrollTargetOnScreen(s.Element, s.VisibilityPercentage)
-		if err == nil && node != nil && isDisplayed(node) {
+		if err == nil && node != nil && d.isDisplayed(node) {
 			// A found element is not necessarily a visible one: a ScrollView
 			// item keeps a real frame while sitting below the fold, and a
 			// half-covered element is exactly what the following tap would
@@ -869,7 +870,7 @@ func (d *Driver) scrollTargetOnScreen(sel flow.Selector, visibilityPct int) (*Sn
 	if err == nil && len(nodes) > 0 && sel.Index == "" {
 		if w, h := d.screenDims(); w > 0 && h > 0 {
 			for i := range nodes {
-				if isDisplayed(&nodes[i]) && core.MeetsVisibility(snapshotBounds(&nodes[i]), w, h, visibilityPct) {
+				if d.isDisplayed(&nodes[i]) && core.MeetsVisibility(snapshotBounds(&nodes[i]), w, h, visibilityPct) {
 					return &nodes[i], nil
 				}
 			}
@@ -1153,7 +1154,7 @@ func (d *Driver) handleWaitUntil(s *flow.WaitUntilStep) *core.CommandResult {
 			nodes, err := d.snapshotMatching(*s.Visible)
 			if err == nil {
 				for i := range nodes {
-					if isDisplayed(&nodes[i]) {
+					if d.isDisplayed(&nodes[i]) {
 						return core.SuccessResult("visible", toElementInfo(&nodes[i]))
 					}
 				}
@@ -1166,7 +1167,7 @@ func (d *Driver) handleWaitUntil(s *flow.WaitUntilStep) *core.CommandResult {
 			if err != nil && !isSnapshotFailure(err) {
 				return core.ErrorResult(err, "snapshot failed")
 			}
-			if err == nil && countDisplayed(nodes) == 0 {
+			if err == nil && d.countDisplayed(nodes) == 0 {
 				return core.SuccessResult("not visible", nil)
 			}
 			// As in assertNotVisible: an app that is not in the foreground
@@ -1405,13 +1406,16 @@ func (d *Driver) fetchSnapshot() ([]SnapshotNode, error) {
 	}
 	ctx, cancel := d.callTimeout()
 	defer cancel()
-	// Default snapshot (no depth limit, no compact). The tighter options
-	// regressed React Native apps where the tree is deeply nested and the
-	// text selectors target StaticText whose parents are .other wrappers
-	// that compact mode drops.
+	// No depth limit and no compact mode: those regressed React Native apps,
+	// whose text sits in StaticText under .other wrappers compact mode drops.
+	// visibleOnly returns just the elements on screen, as Maestro's
+	// filterOutOfBounds does before matching: a web page's off-screen
+	// document stays on the device, and a copy parked off the edge can no
+	// longer be matched ahead of the one on screen.
 	data, err := d.client.Call(ctx, Command{
 		Command:     CmdSnapshot,
 		AppBundleID: d.appID,
+		VisibleOnly: boolPtr(true),
 	})
 	d.lastSnapshotAppState = ""
 	if data != nil {
@@ -1422,6 +1426,10 @@ func (d *Driver) fetchSnapshot() ([]SnapshotNode, error) {
 	}
 	if data == nil {
 		return nil, nil
+	}
+	d.lastSnapshotTruncated = data.Truncated != nil && *data.Truncated
+	if d.lastSnapshotTruncated {
+		logger.Debug("[devicelab-ios] snapshot truncated at %d on-screen nodes; a match may be missing", len(data.Nodes))
 	}
 	d.snapshotCache = data.Nodes
 	d.snapshotCacheTime = time.Now()
@@ -1533,14 +1541,38 @@ func pointOf(n *SnapshotNode, point string) (float64, float64, error) {
 	return n.Rect.X + float64(dx), n.Rect.Y + float64(dy), nil
 }
 
-// isDisplayed approximates Maestro's "displayed" predicate. agent-device's
-// snapshot doesn't carry an explicit displayed flag. We treat any element
-// with a non-empty rect as displayed — hittable is too strict (agent-device
-// marks labels inside alerts as non-hittable because the alert's frame
-// covers their centre, but they're clearly on screen and assertVisible
-// should accept them).
-func isDisplayed(n *SnapshotNode) bool {
-	return n != nil && n.Rect.Width > 0 && n.Rect.Height > 0
+// isDisplayed approximates Maestro's "displayed" predicate: a non-empty rect
+// with at least 10% of it on screen (Maestro's filterOutOfBounds). Hittable
+// is too strict — labels inside an alert are non-hittable because the
+// alert's frame covers their centre, yet they are plainly on screen. With no
+// screen size (a test driver, an unprobed device) only the rect is checked.
+func (d *Driver) isDisplayed(n *SnapshotNode) bool {
+	if n == nil || n.Rect.Width <= 0 || n.Rect.Height <= 0 {
+		return false
+	}
+	w, h := d.screenDims()
+	if w <= 0 || h <= 0 {
+		return true
+	}
+	return visibleFraction(n.Rect, w, h) >= minVisibleFraction
+}
+
+// minVisibleFraction is how much of an element must be on screen for it to
+// count as displayed — Maestro's filterOutOfBounds threshold.
+const minVisibleFraction = 0.1
+
+// visibleFraction is the share of r's area inside the w×h screen.
+func visibleFraction(r SnapshotRect, w, h int) float64 {
+	area := r.Width * r.Height
+	if area <= 0 {
+		return 0
+	}
+	ow := math.Min(r.X+r.Width, float64(w)) - math.Max(r.X, 0)
+	oh := math.Min(r.Y+r.Height, float64(h)) - math.Max(r.Y, 0)
+	if ow <= 0 || oh <= 0 {
+		return 0
+	}
+	return (ow * oh) / area
 }
 
 func nodesToPtrs(in []SnapshotNode) []*SnapshotNode {

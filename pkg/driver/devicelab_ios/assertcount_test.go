@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
 )
 
@@ -119,10 +120,37 @@ func TestCountDisplayed(t *testing.T) {
 		{Type: "Cell", Identifier: "c", Rect: SnapshotRect{Width: 10}}, // zero height
 		{Type: "Cell", Identifier: "d", Rect: SnapshotRect{Width: 1, Height: 1}},
 	}
-	if got := countDisplayed(nodes); got != 2 {
+	d := &Driver{} // no screen size: only the rect is checked
+	if got := d.countDisplayed(nodes); got != 2 {
 		t.Errorf("countDisplayed = %d, want 2", got)
 	}
-	if got := countDisplayed(nil); got != 0 {
+	if got := d.countDisplayed(nil); got != 0 {
 		t.Errorf("countDisplayed(nil) = %d, want 0", got)
+	}
+}
+
+// With a screen size, an element counts as displayed only when at least 10%
+// of it is on screen, as Maestro's filterOutOfBounds decides.
+func TestIsDisplayedNeedsTenPercentOnScreen(t *testing.T) {
+	d := &Driver{info: &core.PlatformInfo{ScreenWidth: 400, ScreenHeight: 800}}
+	for _, tc := range []struct {
+		name string
+		rect SnapshotRect
+		want bool
+	}{
+		{"fully on screen", SnapshotRect{X: 10, Y: 10, Width: 100, Height: 40}, true},
+		{"parked off the right edge", SnapshotRect{X: 414, Y: 866, Width: 102, Height: 20}, false},
+		{"below the fold", SnapshotRect{X: 0, Y: 1200, Width: 100, Height: 40}, false},
+		{"20% peeking in", SnapshotRect{X: 0, Y: 792, Width: 100, Height: 40}, true},
+		{"5% peeking in", SnapshotRect{X: 0, Y: 798, Width: 100, Height: 40}, false},
+		{"zero size", SnapshotRect{X: 10, Y: 10}, false},
+	} {
+		n := &SnapshotNode{Rect: tc.rect}
+		if got := d.isDisplayed(n); got != tc.want {
+			t.Errorf("%s: isDisplayed = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if d.isDisplayed(nil) {
+		t.Error("nil node reported displayed")
 	}
 }

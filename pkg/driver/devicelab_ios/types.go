@@ -104,7 +104,10 @@ type Command struct {
 	// MoveDurationMs — drag only: how long the movement takes. DurationMs is
 	// the press-before-move hold on that command; older runners ignore this
 	// field, so swipe/scroll keep their wire shape.
-	MoveDurationMs  *float64 `json:"moveDurationMs,omitempty"`
+	MoveDurationMs *float64 `json:"moveDurationMs,omitempty"`
+	// RestMs — drag only: how long the finger rests at the end point before
+	// lifting. Short lets the content fling; long stops it at the end point.
+	RestMs          *float64 `json:"restMs,omitempty"`
 	Direction       string   `json:"direction,omitempty"`
 	Orientation     string   `json:"orientation,omitempty"`
 	Scale           *float64 `json:"scale,omitempty"`
@@ -119,8 +122,11 @@ type Command struct {
 	Depth           *int     `json:"depth,omitempty"`
 	Scope           string   `json:"scope,omitempty"`
 	Raw             *bool    `json:"raw,omitempty"`
-	Fullscreen      *bool    `json:"fullscreen,omitempty"`
-	Appearance      string   `json:"appearance,omitempty"` // "dark" or "light" (setAppearance)
+	// VisibleOnly — snapshot only: return just the elements at least 10% on
+	// screen (Maestro's filterOutOfBounds). Lookups use it; reports do not.
+	VisibleOnly *bool  `json:"visibleOnly,omitempty"`
+	Fullscreen  *bool  `json:"fullscreen,omitempty"`
+	Appearance  string `json:"appearance,omitempty"` // "dark" or "light" (setAppearance)
 	// TimeoutMs — idle only: the cap on the wait. A pointer so an explicit 0
 	// ("answer now, do not wait") reaches the runner; nil means its default
 	// of 1000ms. The runner clamps it to 10000ms.

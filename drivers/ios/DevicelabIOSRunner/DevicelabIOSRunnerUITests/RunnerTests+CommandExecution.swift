@@ -808,7 +808,8 @@ extension RunnerTests {
         depth: command.depth,
         scope: command.scope,
         raw: command.raw ?? false,
-        followsScreen: (command.appBundleId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        followsScreen: (command.appBundleId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty,
+        visibleOnly: command.visibleOnly ?? false
       )
       let target = activeApp
       return withSnapshotRequestTimeout {

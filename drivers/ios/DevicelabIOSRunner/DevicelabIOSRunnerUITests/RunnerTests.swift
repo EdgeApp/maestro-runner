@@ -41,7 +41,13 @@ final class RunnerTests: XCTestCase {
   var currentBundleId: String?
   let maxRequestBytes = 2 * 1024 * 1024
   let maxSnapshotElements = 600
-  let fastSnapshotLimit = 300
+  // Node budgets for the fast snapshot. A full tree (reports) caps at
+  // fastSnapshotLimit. A visibleOnly tree (lookups) counts only elements on
+  // screen, so a long web page no longer loses its footer to the cap; the
+  // higher budget is a guard against a pathological screen, not a working
+  // limit.
+  let fastSnapshotLimit = 1500
+  let visibleSnapshotLimit = 3000
   let mainThreadExecutionTimeout: TimeInterval = 30
   let appExistenceTimeout: TimeInterval = 30
   let retryCooldown: TimeInterval = 0.2
