@@ -2,6 +2,7 @@ package devicelab_ios
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,23 +93,54 @@ func TestOpenSimulatorInspectorNeedsSocket(t *testing.T) {
 	}
 }
 
-// cdpPage serves one page's CDP socket, answering Runtime.evaluate with value.
+// cdpPage serves page CDP sockets, answering every Runtime.evaluate with
+// value; conns counts connections.
 func cdpPage(t *testing.T, value string) *httptest.Server {
+	srv, _ := cdpPageCounting(t, value)
+	return srv
+}
+
+func cdpPageCounting(t *testing.T, value string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
+	var conns atomic.Int32
 	up := websocket.Upgrader{}
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := up.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
+		conns.Add(1)
 		defer ws.Close()
-		var req map[string]any
-		if err := ws.ReadJSON(&req); err != nil {
-			return
+		for {
+			var req struct {
+				ID int `json:"id"`
+			}
+			if err := ws.ReadJSON(&req); err != nil {
+				return
+			}
+			_ = ws.WriteJSON(map[string]any{"method": "Runtime.consoleAPICalled"})
+			_ = ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"id":%d,"result":{"result":{"type":"boolean","value":%s}}}`, req.ID, value)))
 		}
-		_ = ws.WriteJSON(map[string]any{"method": "Runtime.consoleAPICalled"})
-		_ = ws.WriteMessage(websocket.TextMessage, []byte(`{"id":1,"result":{"result":{"type":"boolean","value":`+value+`}}}`))
 	}))
+	return srv, &conns
+}
+
+func TestEvaluateReusesThePageConnection(t *testing.T) {
+	srv, conns := cdpPageCounting(t, "false")
+	defer srv.Close()
+	in := &inspector{client: &fakeLister{}, addr: strings.TrimPrefix(srv.URL, "http://")}
+	for i := 0; i < 3; i++ {
+		if _, err := in.evaluateBool(context.Background(), 7, visibleLoadingJS); err != nil {
+			t.Fatalf("check %d: %v", i, err)
+		}
+	}
+	if n := conns.Load(); n != 1 {
+		t.Errorf("connections = %d, want 1 reused across checks", n)
+	}
+	_ = in.Close()
+	if len(in.socks) != 0 {
+		t.Errorf("Close left %d page connections open", len(in.socks))
+	}
 }
 
 func TestEvaluateBoolReadsTheAnswer(t *testing.T) {

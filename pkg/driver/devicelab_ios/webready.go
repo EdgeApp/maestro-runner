@@ -48,6 +48,17 @@ type inspector struct {
 	client pageLister
 	addr   string
 	cancel context.CancelFunc
+
+	// socks keeps one CDP connection per page: the bridge serves a page's
+	// first inspector session only, and a second connection timed out.
+	mu    sync.Mutex
+	socks map[int]*pageSocket
+}
+
+// pageSocket is a page's CDP connection and its next request id.
+type pageSocket struct {
+	ws     *websocket.Conn
+	nextID int
 }
 
 // pageLister is the part of go-ios's inspector client used here.
@@ -114,7 +125,9 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 		if !strings.HasPrefix(p.Page.URL, "http") {
 			continue // extension and internal pages never "load" for the user
 		}
+		start := time.Now()
 		loading, err := in.evaluateBool(ctx, p.Page.ID, visibleLoadingJS)
+		logger.Debug("[devicelab-ios] web page %d %s loading=%v err=%v (%v)", p.Page.ID, p.Page.URL, loading, err, time.Since(start).Round(time.Millisecond))
 		if err != nil {
 			continue // a page closing mid-check is not a loading page
 		}
@@ -125,21 +138,52 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 	return false, nil
 }
 
-// evaluateBool runs a boolean expression on one page over the CDP bridge.
+// evaluateBool runs a boolean expression on one page over the CDP bridge,
+// reusing the page's connection.
 func (in *inspector) evaluateBool(ctx context.Context, pageID int, expr string) (bool, error) {
 	cctx, cancel := context.WithTimeout(ctx, webCallTimeout)
 	defer cancel()
-	ws, _, err := websocket.DefaultDialer.DialContext(cctx, fmt.Sprintf("ws://%s/devtools/page/%d", in.addr, pageID), nil)
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	ps, err := in.socket(cctx, pageID)
 	if err != nil {
 		return false, err
 	}
-	defer ws.Close()
-	if deadline, ok := cctx.Deadline(); ok {
-		_ = ws.SetReadDeadline(deadline)
+	v, err := ps.evaluate(cctx, expr)
+	if err != nil {
+		_ = ps.ws.Close()
+		delete(in.socks, pageID)
 	}
-	req := map[string]any{"id": 1, "method": "Runtime.evaluate",
+	return v, err
+}
+
+// socket returns the page's open connection, dialing it the first time.
+func (in *inspector) socket(ctx context.Context, pageID int) (*pageSocket, error) {
+	if ps, ok := in.socks[pageID]; ok {
+		return ps, nil
+	}
+	ws, _, err := websocket.DefaultDialer.DialContext(ctx, fmt.Sprintf("ws://%s/devtools/page/%d", in.addr, pageID), nil)
+	if err != nil {
+		return nil, err
+	}
+	if in.socks == nil {
+		in.socks = map[int]*pageSocket{}
+	}
+	ps := &pageSocket{ws: ws, nextID: 1}
+	in.socks[pageID] = ps
+	return ps, nil
+}
+
+func (ps *pageSocket) evaluate(ctx context.Context, expr string) (bool, error) {
+	id := ps.nextID
+	ps.nextID++
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = ps.ws.SetReadDeadline(deadline)
+		_ = ps.ws.SetWriteDeadline(deadline)
+	}
+	req := map[string]any{"id": id, "method": "Runtime.evaluate",
 		"params": map[string]any{"expression": expr, "returnByValue": true}}
-	if err := ws.WriteJSON(req); err != nil {
+	if err := ps.ws.WriteJSON(req); err != nil {
 		return false, err
 	}
 	for {
@@ -152,11 +196,11 @@ func (in *inspector) evaluateBool(ctx context.Context, pageID int, expr string) 
 			} `json:"result"`
 			Error json.RawMessage `json:"error"`
 		}
-		if err := ws.ReadJSON(&msg); err != nil {
+		if err := ps.ws.ReadJSON(&msg); err != nil {
 			return false, err
 		}
-		if msg.ID != 1 {
-			continue // events
+		if msg.ID != id {
+			continue // events, and replies to requests that timed out
 		}
 		if len(msg.Error) > 0 {
 			return false, fmt.Errorf("evaluate: %s", msg.Error)
@@ -170,6 +214,12 @@ func (in *inspector) evaluateBool(ctx context.Context, pageID int, expr string) 
 }
 
 func (in *inspector) Close() error {
+	in.mu.Lock()
+	for id, ps := range in.socks {
+		_ = ps.ws.Close()
+		delete(in.socks, id)
+	}
+	in.mu.Unlock()
 	if in.cancel != nil {
 		in.cancel()
 	}
