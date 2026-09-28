@@ -270,6 +270,13 @@ func (d *Driver) scroll(direction string, speed int) *core.CommandResult {
 // swipe and an on-device settle. The timeout is the budget, as in Maestro;
 // maxScrolls caps it only when the flow sets it. A screen that stops moving
 // (the settle's screen hash repeating) ends the search early.
+// scrollSettleTimeout bounds the wait after each scrollUntilVisible swipe. A
+// list keeps drifting for about 2s after a fling (DDG settings), and waiting
+// it out bought nothing: the next swipe stops the drift, the step that acts
+// on the element settles first, and a drifting screen never reads as "no
+// progress".
+const scrollSettleTimeout = time.Second
+
 func (d *Driver) scrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.CommandResult {
 	if !s.From.IsEmpty() {
 		err := fmt.Errorf("scrollUntilVisible `from:` is not supported on this driver yet")
@@ -322,7 +329,7 @@ func (d *Driver) scrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.Comman
 		if res := d.scroll(direction, s.Speed); !res.Success {
 			return res
 		}
-		if resp, err := d.call("settle", &Args{TimeoutMs: float64(defaultSettleTimeout.Milliseconds())}); err == nil {
+		if resp, err := d.call("settle", &Args{TimeoutMs: float64(scrollSettleTimeout.Milliseconds())}); err == nil {
 			if sig := resp.payload().ScreenHash; sig != "" && progress.Observe(sig) {
 				if shown != nil {
 					return core.SuccessResult("element visible at the end of the content", toElementInfo(shown))
