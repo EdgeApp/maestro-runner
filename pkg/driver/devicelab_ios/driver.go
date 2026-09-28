@@ -12,6 +12,7 @@ import (
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 	"github.com/devicelab-dev/maestro-runner/pkg/simulator"
 )
 
@@ -390,7 +391,14 @@ func movesScreen(step flow.Step) bool {
 // error: the next step polls anyway.
 func (d *Driver) settle(timeout time.Duration) {
 	d.waitForWebLoad()
-	_, _ = d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds()), Quiescence: quiescenceMode()})
+	resp, err := d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds()), Quiescence: quiescenceMode()})
+	if err == nil {
+		// Settles decided on the tree and frames are the rule; log the rest
+		// (frames only on a slow tree, a page still loading, a timeout).
+		if p := resp.payload(); p.Signal != "tree+frame" || (p.Settled != nil && !*p.Settled) {
+			logger.Debug("[devicelab-ios] settle signal=%s settled=%v waited=%.0fms", p.Signal, p.Settled != nil && *p.Settled, p.WaitedMs)
+		}
+	}
 }
 
 // quiescenceMode is XCTest's app-idle wait that settle runs first. An app
