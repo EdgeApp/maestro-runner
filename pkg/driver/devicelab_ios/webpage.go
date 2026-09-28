@@ -4,12 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // Network activity, as the Android driver tracks it for WebViews: a page is
@@ -26,20 +23,14 @@ const (
 	staleRequest = 10 * time.Second
 )
 
-// pageConn is one page's CDP connection. A reader goroutine answers calls and
-// tracks network requests.
+// pageConn is one page's inspector session plus its network tracking.
 type pageConn struct {
-	ws      *websocket.Conn
-	writeMu sync.Mutex
+	sess *wirSession
 
 	mu        sync.Mutex
-	nextID    int
-	pending   map[int]chan cdpReply
 	inflight  map[string]time.Time
 	lastEvent time.Time // last request start or end
 	busySince time.Time // start of the current busy streak
-	closed    chan struct{}
-	err       error
 }
 
 type cdpReply struct {
@@ -49,51 +40,20 @@ type cdpReply struct {
 
 var errPageClosed = errors.New("page connection closed")
 
-// dialPage connects to a page's CDP socket and turns on network tracking.
-func dialPage(ctx context.Context, url string) (*pageConn, error) {
-	ws, _, err := websocket.DefaultDialer.DialContext(ctx, url, nil)
+// openPage opens an inspector session on page and turns on network tracking.
+func openPage(ctx context.Context, client *wirClient, page wirPage) (*pageConn, error) {
+	pc := &pageConn{inflight: map[string]time.Time{}}
+	sess, err := client.openSession(ctx, page, func(method string, params json.RawMessage) {
+		pc.onEvent(method, params, time.Now())
+	})
 	if err != nil {
 		return nil, err
 	}
-	pc := &pageConn{
-		ws:       ws,
-		nextID:   1,
-		pending:  map[int]chan cdpReply{},
-		inflight: map[string]time.Time{},
-		closed:   make(chan struct{}),
-	}
-	go pc.readLoop()
+	pc.sess = sess
 	// Network tracking is a second signal; a page that refuses it still
 	// answers readyState.
-	_, _ = pc.call(ctx, "Network.enable", nil)
+	_, _ = sess.call(ctx, "Network.enable", nil)
 	return pc, nil
-}
-
-func (pc *pageConn) readLoop() {
-	for {
-		var msg struct {
-			ID     int             `json:"id"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-			Result json.RawMessage `json:"result"`
-			Error  json.RawMessage `json:"error"`
-		}
-		if err := pc.ws.ReadJSON(&msg); err != nil {
-			pc.fail(err)
-			return
-		}
-		if msg.ID > 0 {
-			pc.mu.Lock()
-			ch := pc.pending[msg.ID]
-			delete(pc.pending, msg.ID)
-			pc.mu.Unlock()
-			if ch != nil {
-				ch <- cdpReply{Result: msg.Result, Error: msg.Error}
-			}
-			continue
-		}
-		pc.onEvent(msg.Method, msg.Params, time.Now())
-	}
 }
 
 // onEvent tracks request lifecycles.
@@ -162,54 +122,9 @@ func (pc *pageConn) networkBusy(now time.Time) bool {
 	return pc.busySince.IsZero() || now.Sub(pc.busySince) < networkCap
 }
 
-// call sends one CDP command and waits for its reply.
-func (pc *pageConn) call(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
-	ch := make(chan cdpReply, 1)
-	pc.mu.Lock()
-	if pc.err != nil {
-		err := pc.err
-		pc.mu.Unlock()
-		return nil, err
-	}
-	id := pc.nextID
-	pc.nextID++
-	pc.pending[id] = ch
-	pc.mu.Unlock()
-	defer func() {
-		pc.mu.Lock()
-		delete(pc.pending, id)
-		pc.mu.Unlock()
-	}()
-
-	req := map[string]any{"id": id, "method": method}
-	if params != nil {
-		req["params"] = params
-	}
-	pc.writeMu.Lock()
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = pc.ws.SetWriteDeadline(deadline)
-	}
-	err := pc.ws.WriteJSON(req)
-	pc.writeMu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	select {
-	case r := <-ch:
-		if len(r.Error) > 0 {
-			return nil, fmt.Errorf("%s: %s", method, r.Error)
-		}
-		return r.Result, nil
-	case <-pc.closed:
-		return nil, errPageClosed
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
 // evaluate runs an expression and returns its JSON value.
 func (pc *pageConn) evaluate(ctx context.Context, expr string) (json.RawMessage, error) {
-	raw, err := pc.call(ctx, "Runtime.evaluate", map[string]any{"expression": expr, "returnByValue": true})
+	raw, err := pc.sess.call(ctx, "Runtime.evaluate", map[string]any{"expression": expr, "returnByValue": true})
 	if err != nil {
 		return nil, err
 	}
@@ -224,17 +139,8 @@ func (pc *pageConn) evaluate(ctx context.Context, expr string) (json.RawMessage,
 	return res.Result.Value, nil
 }
 
-func (pc *pageConn) fail(err error) {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	if pc.err != nil {
-		return
-	}
-	pc.err = err
-	close(pc.closed)
-}
-
 func (pc *pageConn) close() {
-	pc.fail(errPageClosed)
-	_ = pc.ws.Close()
+	if pc.sess != nil {
+		pc.sess.close()
+	}
 }

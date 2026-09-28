@@ -11,9 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/danielpaulus/go-ios/ios"
-	"github.com/danielpaulus/go-ios/ios/webinspector"
-
 	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
@@ -35,6 +32,8 @@ const (
 	// youngPage is how long after a page is first listed a failed check
 	// still means "busy loading".
 	youngPage = 5 * time.Second
+	// pageRetry is how long a page whose check failed is left alone.
+	pageRetry = 5 * time.Second
 )
 
 // webPages tells whether an app's visible web page is still loading.
@@ -46,123 +45,59 @@ type webPages interface {
 // pageStateJS is "hidden" for a page not on screen, else its readyState.
 const pageStateJS = `document.visibilityState === "visible" ? document.readyState : "hidden"`
 
-// inspector reads page state through the simulator's webinspectord: go-ios's
-// inspector client, bridged to CDP on a local port.
+// inspector reads page state through webinspectord with our own client.
 type inspector struct {
-	client pageLister
-	addr   string
-	cancel context.CancelFunc
+	client *wirClient
 
-	// socks keeps one CDP connection per page: the bridge serves a page's
-	// first inspector session only, and a second connection timed out.
-	mu    sync.Mutex
-	socks map[int]*pageConn
-
-	// firstSeen, dead and lastSig track pages across checks: when each was
-	// first listed, which stopped answering, and each app's last listing.
+	mu        sync.Mutex
+	pages     map[int]*pageConn // page id → open session
 	firstSeen map[int]time.Time
-	dead      map[int]bool
-	lastSig   map[string]string
+	retryAt   map[int]time.Time // a failed page is not asked before this
+	lastSig   map[string]string // bundle id → last listing
 
 	// evalTimeout bounds one page check (webEvalTimeout; tests shorten it).
 	evalTimeout time.Duration
 }
 
-// pageLister is the part of go-ios's inspector client used here.
-type pageLister interface {
-	ListPages(ctx context.Context, wait time.Duration) ([]webinspector.ApplicationPage, error)
-	Close() error
-}
-
-// openInspector connects to the simulator's inspector socket.
+// openInspector connects to a simulator's webinspectord socket.
 func openInspector(ctx context.Context, socket string) (*inspector, error) {
 	conn, err := net.DialTimeout("unix", socket, webCallTimeout)
 	if err != nil {
 		return nil, err
 	}
-	client := webinspector.NewWithConnection(ios.DeviceEntry{}, ios.NewDeviceConnectionWithConn(conn))
+	client := newWIRClient(conn)
 	cctx, cancel := context.WithTimeout(ctx, 2*webCallTimeout)
 	defer cancel()
-	if err := client.Connect(cctx); err != nil {
-		_ = client.Close()
+	if err := client.start(cctx); err != nil {
+		_ = client.close()
 		return nil, err
 	}
-	// Page listings arrive a moment after connecting and are pushed on every
-	// change after that; wait once so the first check sees them.
-	if _, err := client.ListPages(cctx, listingWait); err != nil {
-		_ = client.Close()
-		return nil, err
-	}
-	port, err := freePort()
-	if err != nil {
-		_ = client.Close()
-		return nil, err
-	}
-	sctx, stop := context.WithCancel(context.Background())
-	server := webinspector.NewCDPServer(client, "127.0.0.1", port)
-	go func() {
-		if err := server.Serve(sctx); err != nil && sctx.Err() == nil {
-			logger.Debug("[devicelab-ios] web inspector bridge stopped: %v", err)
-		}
-	}()
-	// Serve listens in the goroutine; the first check raced it and was
-	// refused. Wait until the bridge accepts connections.
-	if err := waitListening(server.Addr(), webCallTimeout); err != nil {
-		stop()
-		_ = client.Close()
-		return nil, err
-	}
-	return &inspector{client: client, addr: server.Addr(), cancel: stop}, nil
+	return newInspector(client), nil
 }
 
-// waitListening waits until addr accepts TCP connections.
-func waitListening(addr string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-		if err == nil {
-			return c.Close()
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("inspector bridge not listening on %s: %w", addr, err)
-		}
-		time.Sleep(10 * time.Millisecond)
+func newInspector(client *wirClient) *inspector {
+	return &inspector{
+		client:    client,
+		pages:     map[int]*pageConn{},
+		firstSeen: map[int]time.Time{},
+		retryAt:   map[int]time.Time{},
+		lastSig:   map[string]string{},
 	}
-}
-
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error) {
-	listed, err := in.client.ListPages(ctx, 0)
-	if err != nil {
+	if err := in.client.failure(); err != nil {
 		return false, err
 	}
-	var pages []webinspector.Page
-	for _, p := range listed {
-		if p.Application.BundleID != bundleID {
-			continue
+	var pages []wirPage
+	for _, p := range in.client.webPages(bundleID) {
+		if strings.HasPrefix(p.URL, "http") {
+			pages = append(pages, p) // extension and internal pages never "load" for the user
 		}
-		if p.Page.Type != webinspector.WIRTypeWebPage && p.Page.Type != webinspector.WIRTypeWeb {
-			continue // JavaScript contexts and automation sessions
-		}
-		if !strings.HasPrefix(p.Page.URL, "http") {
-			continue // extension and internal pages never "load" for the user
-		}
-		pages = append(pages, p.Page)
 	}
 
-	in.mu.Lock()
 	now := time.Now()
-	if in.firstSeen == nil {
-		in.firstSeen, in.dead, in.lastSig = map[int]time.Time{}, map[int]bool{}, map[string]string{}
-	}
+	in.mu.Lock()
 	sig := pagesSignature(pages)
 	prev, known := in.lastSig[bundleID]
 	in.lastSig[bundleID] = sig
@@ -180,38 +115,72 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 	if loading {
 		logger.Debug("[devicelab-ios] web pages changed: %s", sig)
 	}
+
+	// Ask every page at once and stop at the visible one: only one page is
+	// on screen and its state decides. A hidden tab's web process is
+	// throttled and can take a second or more to answer; asked one by one,
+	// it held the whole check.
+	type answer struct {
+		page  wirPage
+		state string
+		pc    *pageConn
+		err   error
+		took  time.Duration
+	}
+	pctx, stop := context.WithCancel(ctx)
+	defer stop()
+	answers := make(chan answer, len(pages))
+	asked := 0
 	for _, p := range pages {
 		in.mu.Lock()
-		dead, seen := in.dead[p.ID], in.firstSeen[p.ID]
+		retry := in.retryAt[p.ID]
 		in.mu.Unlock()
-		if dead {
+		if now.Before(retry) {
 			continue
 		}
-		start := time.Now()
-		state, pc, err := in.pageState(ctx, p.ID)
-		busy := err == nil && state != "hidden" && (state != "complete" || pc.networkBusy(time.Now()))
-		logger.Debug("[devicelab-ios] web page %d %s state=%s busy=%v err=%v (%v)", p.ID, p.URL, state, busy, err, time.Since(start).Round(time.Millisecond))
-		if err != nil {
-			// A page's inspector session cannot be reopened once it fails,
-			// so never ask it again. A young page that does not answer is
+		asked++
+		go func(p wirPage) {
+			start := time.Now()
+			state, pc, err := in.pageState(pctx, p)
+			answers <- answer{p, state, pc, err, time.Since(start)}
+		}(p)
+	}
+	visible := false
+	silentYoung := false
+	for i := 0; i < asked; i++ {
+		a := <-answers
+		if visible && a.err != nil {
+			continue // cut short once the visible page answered
+		}
+		busy := a.err == nil && a.state != "hidden" && (a.state != "complete" || a.pc.networkBusy(time.Now()))
+		logger.Debug("[devicelab-ios] web page %d %s state=%s busy=%v err=%v (%v)", a.page.ID, a.page.URL, a.state, busy, a.err, a.took.Round(time.Millisecond))
+		if a.err != nil {
+			// Leave a failing page alone for a while, like the Android
+			// driver's connect backoff. A young page that does not answer is
 			// busy loading; an old one is a background tab or gone.
 			in.mu.Lock()
-			in.dead[p.ID] = true
+			in.retryAt[a.page.ID] = time.Now().Add(pageRetry)
+			seen := in.firstSeen[a.page.ID]
 			in.mu.Unlock()
 			if time.Since(seen) < youngPage {
-				loading = true
+				silentYoung = true
 			}
 			continue
 		}
-		if busy {
-			loading = true
+		if a.state != "hidden" {
+			visible = true
+			loading = loading || busy
+			stop() // the rest are hidden tabs
 		}
+	}
+	if !visible && silentYoung {
+		loading = true
 	}
 	return loading, nil
 }
 
 // pagesSignature identifies an app's set of pages and where they are.
-func pagesSignature(pages []webinspector.Page) string {
+func pagesSignature(pages []wirPage) string {
 	parts := make([]string, 0, len(pages))
 	for _, p := range pages {
 		parts = append(parts, fmt.Sprintf("%d=%s", p.ID, p.URL))
@@ -220,22 +189,26 @@ func pagesSignature(pages []webinspector.Page) string {
 	return strings.Join(parts, " ")
 }
 
-// pageState reads one page's visibility and readyState over its reused
-// connection: "hidden", or the readyState of the visible page.
-func (in *inspector) pageState(ctx context.Context, pageID int) (string, *pageConn, error) {
+// pageState reads one page's visibility and readyState over its session:
+// "hidden", or the readyState of the visible page.
+func (in *inspector) pageState(ctx context.Context, page wirPage) (string, *pageConn, error) {
 	timeout := in.evalTimeout
 	if timeout <= 0 {
 		timeout = webEvalTimeout
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	pc, err := in.conn(cctx, pageID)
+	pc, err := in.conn(cctx, page)
 	if err != nil {
 		return "", nil, err
 	}
 	raw, err := pc.evaluate(cctx, pageStateJS)
 	if err != nil {
-		in.drop(pageID)
+		// A page that is only slow (a throttled hidden tab) keeps its
+		// session; a protocol failure closes it.
+		if cctx.Err() == nil {
+			in.drop(page.ID)
+		}
 		return "", nil, err
 	}
 	var state string
@@ -245,31 +218,28 @@ func (in *inspector) pageState(ctx context.Context, pageID int) (string, *pageCo
 	return state, pc, nil
 }
 
-// conn returns the page's open connection, dialing it the first time.
-func (in *inspector) conn(ctx context.Context, pageID int) (*pageConn, error) {
+// conn returns the page's open session, opening it the first time.
+func (in *inspector) conn(ctx context.Context, page wirPage) (*pageConn, error) {
 	in.mu.Lock()
-	pc, ok := in.socks[pageID]
+	pc, ok := in.pages[page.ID]
 	in.mu.Unlock()
 	if ok {
 		return pc, nil
 	}
-	pc, err := dialPage(ctx, fmt.Sprintf("ws://%s/devtools/page/%d", in.addr, pageID))
+	pc, err := openPage(ctx, in.client, page)
 	if err != nil {
 		return nil, err
 	}
 	in.mu.Lock()
-	if in.socks == nil {
-		in.socks = map[int]*pageConn{}
-	}
-	in.socks[pageID] = pc
+	in.pages[page.ID] = pc
 	in.mu.Unlock()
 	return pc, nil
 }
 
 func (in *inspector) drop(pageID int) {
 	in.mu.Lock()
-	pc := in.socks[pageID]
-	delete(in.socks, pageID)
+	pc := in.pages[pageID]
+	delete(in.pages, pageID)
 	in.mu.Unlock()
 	if pc != nil {
 		pc.close()
@@ -278,15 +248,12 @@ func (in *inspector) drop(pageID int) {
 
 func (in *inspector) Close() error {
 	in.mu.Lock()
-	for id, pc := range in.socks {
+	for id, pc := range in.pages {
 		pc.close()
-		delete(in.socks, id)
+		delete(in.pages, id)
 	}
 	in.mu.Unlock()
-	if in.cancel != nil {
-		in.cancel()
-	}
-	return in.client.Close()
+	return in.client.close()
 }
 
 // webState is the driver's inspector, opened in the background on first

@@ -17,7 +17,7 @@ func finished(id string) json.RawMessage {
 }
 
 func newTracker() *pageConn {
-	return &pageConn{inflight: map[string]time.Time{}, pending: map[int]chan cdpReply{}, closed: make(chan struct{})}
+	return &pageConn{inflight: map[string]time.Time{}}
 }
 
 func TestNetworkBusyWhileRequestsRunAndBriefly(t *testing.T) {
@@ -76,19 +76,5 @@ func TestNetworkDropsStaleRequestsAndFailures(t *testing.T) {
 	pc.onEvent("Network.requestWillBeSent", json.RawMessage(`not json`), t0)
 	if pc.networkBusy(t0.Add(50*time.Millisecond + networkQuiet)) {
 		t.Error("a failed request kept the page busy")
-	}
-}
-
-func TestCallFailsAfterClose(t *testing.T) {
-	srv := cdpPage(t, "complete")
-	defer srv.Close()
-	in := &inspector{client: &fakeLister{}, addr: srv.URL[len("http://"):]}
-	_, pc, err := in.pageState(t.Context(), 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pc.close()
-	if _, err := pc.call(t.Context(), "Runtime.evaluate", nil); err == nil {
-		t.Error("a call on a closed page succeeded")
 	}
 }

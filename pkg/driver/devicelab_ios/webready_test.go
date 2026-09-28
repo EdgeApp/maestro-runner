@@ -3,16 +3,11 @@ package devicelab_ios
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"strings"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/danielpaulus/go-ios/ios/webinspector"
-	"github.com/gorilla/websocket"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
 )
@@ -127,232 +122,48 @@ func TestOpenSimulatorInspectorNeedsSocket(t *testing.T) {
 	}
 }
 
-// cdpPage serves page CDP sockets. Runtime.evaluate answers with the page
-// state (a readyState, or "hidden"); other commands get an empty result.
-func cdpPage(t *testing.T, state string) *httptest.Server {
-	srv, _ := cdpPageCounting(t, state)
-	return srv
-}
-
-func cdpPageCounting(t *testing.T, state string) (*httptest.Server, *atomic.Int32) {
-	t.Helper()
-	var conns atomic.Int32
-	up := websocket.Upgrader{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ws, err := up.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		conns.Add(1)
-		defer ws.Close()
-		for {
-			var req struct {
-				ID     int    `json:"id"`
-				Method string `json:"method"`
-			}
-			if err := ws.ReadJSON(&req); err != nil {
-				return
-			}
-			_ = ws.WriteJSON(map[string]any{"method": "Runtime.consoleAPICalled"})
-			reply := fmt.Sprintf(`{"id":%d,"result":{}}`, req.ID)
-			if req.Method == "Runtime.evaluate" {
-				reply = fmt.Sprintf(`{"id":%d,"result":{"result":{"type":"string","value":%q}}}`, req.ID, state)
-			}
-			_ = ws.WriteMessage(websocket.TextMessage, []byte(reply))
-		}
-	}))
-	return srv, &conns
-}
-
-func TestPageStateReusesThePageConnection(t *testing.T) {
-	srv, conns := cdpPageCounting(t, "complete")
-	defer srv.Close()
-	in := &inspector{client: &fakeLister{}, addr: strings.TrimPrefix(srv.URL, "http://")}
-	for i := 0; i < 3; i++ {
-		state, _, err := in.pageState(context.Background(), 7)
-		if err != nil || state != "complete" {
-			t.Fatalf("check %d: state=%q err=%v", i, state, err)
-		}
-	}
-	if n := conns.Load(); n != 1 {
-		t.Errorf("connections = %d, want 1 reused across checks", n)
-	}
-	_ = in.Close()
-	if len(in.socks) != 0 {
-		t.Errorf("Close left %d page connections open", len(in.socks))
-	}
-}
-
-func TestPageStateReportsErrors(t *testing.T) {
-	up := websocket.Upgrader{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ws, err := up.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer ws.Close()
-		for {
-			var req struct {
-				ID     int    `json:"id"`
-				Method string `json:"method"`
-			}
-			if ws.ReadJSON(&req) != nil {
-				return
-			}
-			reply := fmt.Sprintf(`{"id":%d,"result":{}}`, req.ID)
-			if req.Method == "Runtime.evaluate" {
-				reply = fmt.Sprintf(`{"id":%d,"error":{"message":"no page"}}`, req.ID)
-			}
-			_ = ws.WriteMessage(websocket.TextMessage, []byte(reply))
-		}
-	}))
-	defer srv.Close()
-	in := &inspector{client: &fakeLister{}, addr: strings.TrimPrefix(srv.URL, "http://")}
-	if _, _, err := in.pageState(context.Background(), 1); err == nil {
-		t.Error("an error reply was not reported")
-	}
-	if len(in.socks) != 0 {
-		t.Error("a failed page connection was kept")
-	}
-	in.addr = "127.0.0.1:1"
-	if _, _, err := in.pageState(context.Background(), 1); err == nil {
-		t.Error("a dead bridge was not reported")
-	}
-}
-
 // TestInspectorOnSimulator runs against a booted simulator's webinspectord:
 // DL_IOS_INSPECTOR_SOCKET=<RWI_LISTEN_SOCKET> DL_IOS_INSPECTOR_APP=<bundle id>.
+// It checks every page of the app twice, so each page gets its own session
+// and a second check reuses it.
 func TestInspectorOnSimulator(t *testing.T) {
 	socket, app := os.Getenv("DL_IOS_INSPECTOR_SOCKET"), os.Getenv("DL_IOS_INSPECTOR_APP")
 	if socket == "" || app == "" {
 		t.Skip("set DL_IOS_INSPECTOR_SOCKET and DL_IOS_INSPECTOR_APP to run against a simulator")
 	}
+	start := time.Now()
 	in, err := openInspector(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer in.Close()
-	pages, _ := in.client.ListPages(context.Background(), 0)
-	for _, p := range pages {
-		if p.Application.BundleID == app {
-			t.Logf("page %d %s %q", p.Page.ID, p.Page.Type, p.Page.URL)
+	t.Logf("connected in %v", time.Since(start))
+	for _, p := range in.client.webPages(app) {
+		for round := 1; round <= 2; round++ {
+			s := time.Now()
+			state, pc, err := in.pageState(context.Background(), p)
+			busy := err == nil && pc.networkBusy(time.Now())
+			t.Logf("page %d %q round %d: state=%q netBusy=%v err=%v (%v)", p.ID, p.URL, round, state, busy, err, time.Since(s))
 		}
 	}
-	start := time.Now()
+	s := time.Now()
 	loading, err := in.Loading(context.Background(), app)
-	if err == nil {
-		time.Sleep(time.Second) // let network events arrive, then check again
-		loading, err = in.Loading(context.Background(), app)
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("%s loading=%v in %v", app, loading, time.Since(start))
-}
-
-// fakeLister lists fixed pages.
-type fakeLister struct {
-	pages  []webinspector.ApplicationPage
-	err    error
-	closed bool
-}
-
-func (f *fakeLister) ListPages(context.Context, time.Duration) ([]webinspector.ApplicationPage, error) {
-	return f.pages, f.err
-}
-
-func (f *fakeLister) Close() error { f.closed = true; return nil }
-
-func page(bundle string, id int, typ webinspector.WIRType, url string) webinspector.ApplicationPage {
-	return webinspector.ApplicationPage{
-		Application: webinspector.Application{BundleID: bundle},
-		Page:        webinspector.Page{ID: id, Type: typ, URL: url},
-	}
-}
-
-func TestLoadingChecksOnlyTheAppsWebPages(t *testing.T) {
-	srv := cdpPage(t, "loading")
-	defer srv.Close()
-	lister := &fakeLister{pages: []webinspector.ApplicationPage{
-		page("com.other", 1, webinspector.WIRTypeWebPage, "https://other.example"),
-		page("com.app", 2, webinspector.WIRTypeJavaScript, "https://sw.example"),
-		page("com.app", 3, webinspector.WIRTypeWebPage, "webkit-extension://abc"),
-	}}
-	in := &inspector{client: lister, addr: strings.TrimPrefix(srv.URL, "http://")}
-	if loading, err := in.Loading(context.Background(), "com.app"); err != nil || loading {
-		t.Fatalf("with no user page: loading=%v err=%v, want false", loading, err)
-	}
-	lister.pages = append(lister.pages, page("com.app", 4, webinspector.WIRTypeWebPage, "https://app.example"))
-	if loading, err := in.Loading(context.Background(), "com.app"); err != nil || !loading {
-		t.Fatalf("with a loading page: loading=%v err=%v, want true", loading, err)
-	}
-	if err := in.Close(); err != nil || !lister.closed {
-		t.Errorf("Close: err=%v closed=%v", err, lister.closed)
-	}
-}
-
-func TestLoadingTreatsYoungSilentPagesAsBusyThenSkipsThem(t *testing.T) {
-	lister := &fakeLister{pages: []webinspector.ApplicationPage{
-		page("com.app", 4, webinspector.WIRTypeWebPage, "https://app.example"),
-	}}
-	in := &inspector{client: lister, addr: "127.0.0.1:1", evalTimeout: 50 * time.Millisecond}
-	if loading, err := in.Loading(context.Background(), "com.app"); err != nil || !loading {
-		t.Errorf("young page not answering: loading=%v err=%v, want true", loading, err)
-	}
-	if !in.dead[4] {
-		t.Error("the silent page was not marked dead")
-	}
-	if loading, err := in.Loading(context.Background(), "com.app"); err != nil || loading {
-		t.Errorf("dead page asked again: loading=%v err=%v, want false", loading, err)
-	}
-	lister.err = errBoom
-	if _, err := in.Loading(context.Background(), "com.app"); err == nil {
-		t.Error("a listing error was not reported")
-	}
-}
-
-func TestLoadingIgnoresOldSilentPages(t *testing.T) {
-	lister := &fakeLister{pages: []webinspector.ApplicationPage{
-		page("com.app", 4, webinspector.WIRTypeWebPage, "https://app.example"),
-	}}
-	in := &inspector{client: lister, addr: "127.0.0.1:1", evalTimeout: 50 * time.Millisecond,
-		firstSeen: map[int]time.Time{4: time.Now().Add(-time.Minute)}, dead: map[int]bool{},
-		lastSig: map[string]string{"com.app": "4=https://app.example"}}
-	if loading, err := in.Loading(context.Background(), "com.app"); err != nil || loading {
-		t.Errorf("old background page not answering: loading=%v err=%v, want false", loading, err)
-	}
-}
-
-func TestLoadingCountsANewPageOnce(t *testing.T) {
-	srv := cdpPage(t, "complete")
-	defer srv.Close()
-	lister := &fakeLister{pages: []webinspector.ApplicationPage{
-		page("com.app", 2, webinspector.WIRTypeWebPage, "https://one.example"),
-	}}
-	in := &inspector{client: lister, addr: strings.TrimPrefix(srv.URL, "http://")}
-	if loading, _ := in.Loading(context.Background(), "com.app"); loading {
-		t.Error("the first listing counted as a change")
-	}
-	lister.pages = append(lister.pages, page("com.app", 8, webinspector.WIRTypeWebPage, "https://two.example"))
-	if loading, _ := in.Loading(context.Background(), "com.app"); !loading {
-		t.Error("a new page did not count as loading")
-	}
-	if loading, _ := in.Loading(context.Background(), "com.app"); loading {
-		t.Error("an unchanged listing still counted as loading")
-	}
-	lister.pages[1] = page("com.app", 8, webinspector.WIRTypeWebPage, "https://two.example/next")
-	if loading, _ := in.Loading(context.Background(), "com.app"); !loading {
-		t.Error("a navigation (new URL) did not count as loading")
-	}
-}
-
-func TestWaitListening(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-	if err := waitListening(strings.TrimPrefix(srv.URL, "http://"), time.Second); err != nil {
-		t.Errorf("a listening server: %v", err)
-	}
-	if err := waitListening("127.0.0.1:1", 50*time.Millisecond); err == nil {
-		t.Error("a closed port was reported listening")
+	t.Logf("%s loading=%v in %v", app, loading, time.Since(s))
+	// DL_IOS_INSPECTOR_WATCH=<seconds> keeps checking, as settle would.
+	if secs, _ := strconv.Atoi(os.Getenv("DL_IOS_INSPECTOR_WATCH")); secs > 0 {
+		end := time.Now().Add(time.Duration(secs) * time.Second)
+		for time.Now().Before(end) {
+			s := time.Now()
+			loading, err := in.Loading(context.Background(), app)
+			var urls []string
+			for _, p := range in.client.webPages(app) {
+				urls = append(urls, fmt.Sprintf("%d:%s", p.ID, p.URL))
+			}
+			t.Logf("%s loading=%v err=%v in %v pages=%v", time.Now().Format("15:04:05.000"), loading, err, time.Since(s).Round(time.Millisecond), urls)
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 }

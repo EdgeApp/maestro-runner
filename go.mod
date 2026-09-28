@@ -8,7 +8,6 @@ go 1.26.0
 toolchain go1.26.7
 
 require (
-	github.com/gorilla/websocket v1.5.3
 	github.com/urfave/cli/v2 v2.27.7
 	golang.org/x/text v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -35,7 +34,7 @@ require (
 	github.com/go-rod/rod v0.116.2
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
-	github.com/google/uuid v1.1.2 // indirect
+	github.com/google/uuid v1.1.2
 	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/miekg/dns v1.1.57 // indirect
 	github.com/pierrec/lz4 v2.6.1+incompatible // indirect
