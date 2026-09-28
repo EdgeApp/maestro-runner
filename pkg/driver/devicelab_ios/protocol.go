@@ -38,6 +38,7 @@ type Args struct {
 	Speed       int               `json:"speed,omitempty"`
 	Verify      *bool             `json:"verify,omitempty"`
 	TimeoutMs   float64           `json:"timeoutMs,omitempty"`
+	Quiescence  bool              `json:"quiescence,omitempty"`
 	Action      string            `json:"action,omitempty"`
 	BundleID    string            `json:"bundleId,omitempty"`
 	Arguments   []string          `json:"arguments,omitempty"`
