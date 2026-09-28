@@ -52,10 +52,6 @@ type Driver struct {
 	// lookup: the element appeared while we polled, so the screen was still
 	// changing (a web page still loading).
 	foundLate bool
-	// afterTap is set when the last step that touched the screen pressed it
-	// (tap, long-press, back, key): only then can the app still be finishing
-	// the work the press started, which the app-idle wait covers.
-	afterTap bool
 
 	mu         sync.Mutex
 	stagedApps map[string]stagedApp
@@ -263,7 +259,6 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	// between "tapOn field" and "inputText" keeps the tap point.
 	if actsOnScreen(step) || movesScreen(step) {
 		d.screenMayMove = movesScreen(step)
-		d.afterTap = tapsScreen(step)
 		d.prevTap, d.lastTap = d.lastTap, nil
 	}
 	result := d.execute(step)
@@ -378,18 +373,6 @@ func actsOnScreen(step flow.Step) bool {
 	return false
 }
 
-// tapsScreen reports whether a step presses the screen or a key. The race
-// the app-idle wait closes is a press undone by work it started (DDG's Save,
-// then a back tap); scrolls, typing, asserts and waits start no such work.
-func tapsScreen(step flow.Step) bool {
-	switch step.(type) {
-	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep,
-		*flow.BackStep, *flow.PressKeyStep:
-		return true
-	}
-	return false
-}
-
 // movesScreen reports whether a step can set the screen moving.
 func movesScreen(step flow.Step) bool {
 	switch step.(type) {
@@ -408,11 +391,7 @@ func movesScreen(step flow.Step) bool {
 // error: the next step polls anyway.
 func (d *Driver) settle(timeout time.Duration) {
 	d.waitForWebLoad()
-	quiescence := ""
-	if d.afterTap {
-		quiescence = quiescenceMode()
-	}
-	resp, err := d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds()), Quiescence: quiescence})
+	resp, err := d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds()), Quiescence: quiescenceMode()})
 	if err == nil {
 		// Settles decided on the tree and frames are the rule; log the rest
 		// (frames only on a slow tree, a page still loading, a timeout).
