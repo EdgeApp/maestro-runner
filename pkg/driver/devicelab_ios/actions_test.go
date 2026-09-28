@@ -134,7 +134,7 @@ func TestSwipeForms(t *testing.T) {
 	if *acts[0].X <= *acts[0].X2 {
 		t.Errorf("left swipe should move left: %v → %v", *acts[0].X, *acts[0].X2)
 	}
-	if *acts[1].X != 360 || *acts[1].X2 != 40 || *acts[1].RestMs != 700 {
+	if *acts[1].X != 360 || *acts[1].X2 != 40 || *acts[1].RestMs != 800 {
 		t.Errorf("percent swipe = %+v", acts[1])
 	}
 	if *acts[2].X != 1 || *acts[2].Y2 != 4 {
@@ -621,8 +621,9 @@ func TestScrollUsesMaestroDefaultDuration(t *testing.T) {
 	if len(acts) != 1 || acts[0].MoveMs == nil || acts[0].RestMs == nil {
 		t.Fatalf("acts = %+v", acts)
 	}
-	if got := *acts[0].MoveMs + *acts[0].RestMs; got != 601 {
-		t.Errorf("scroll gesture lasts %vms, want Maestro's 601", got)
+	// Maestro moves in 0.1s, then rests for the whole duration.
+	if *acts[0].MoveMs != 100 || *acts[0].RestMs != 601 {
+		t.Errorf("scroll gesture = move %vms rest %vms, want Maestro's 100 + 601", *acts[0].MoveMs, *acts[0].RestMs)
 	}
 }
 

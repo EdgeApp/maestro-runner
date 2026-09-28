@@ -170,17 +170,16 @@ func notFound(err error, optional bool, what string) *core.CommandResult {
 
 // ---------- swipes and scrolls ----------
 
-// swipeTimes are Maestro's swipe shape: move in 0.1s, rest for the rest of
-// the duration before lifting (a rest stops the fling).
+// swipeTimes are Maestro's swipe shape (EventRecord.addSwipeEvent): move in
+// 0.1s, then rest for the whole duration before lifting (a rest stops the
+// fling). Resting 0.1s less kept more fling: at speed 80 RNTester's list
+// carried a row past the top of the screen between two lookups where
+// Maestro's stopped with it in view.
 func swipeTimes(durationMs int) *Args {
 	if durationMs <= 0 {
 		durationMs = 400
 	}
-	rest := float64(durationMs) - 100
-	if rest < 0 {
-		rest = 0
-	}
-	return &Args{HoldMs: f64(0), MoveMs: f64(100), RestMs: f64(rest)}
+	return &Args{HoldMs: f64(0), MoveMs: f64(100), RestMs: f64(float64(durationMs))}
 }
 
 func (d *Driver) swipeBetween(x1, y1, x2, y2 int, durationMs int) error {
