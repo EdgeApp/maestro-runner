@@ -159,7 +159,7 @@ func logCall(cmd string, elapsed time.Duration, resp *Response, reqBytes, respBy
 	if resp != nil {
 		server = fmt.Sprintf("%.0fms", resp.ServerMs)
 		var parts []string
-		for _, k := range []string{"snapshotMs", "matchMs", "actMs", "settleMs", "nodes"} {
+		for _, k := range []string{"snapshotMs", "matchMs", "actMs", "quiescenceMs", "quiescenceUnbounded", "settleMs", "nodes"} {
 			if v, ok := resp.Phases[k]; ok {
 				parts = append(parts, fmt.Sprintf("%s=%.0f", k, v))
 			}
