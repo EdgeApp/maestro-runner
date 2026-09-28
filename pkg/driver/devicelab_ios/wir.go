@@ -37,6 +37,23 @@ type wirPage struct {
 	URL   string
 }
 
+// pageKey names a page across apps: page ids restart at 1 in every app
+// process, so an id alone is not unique after a relaunch.
+type pageKey struct {
+	app string
+	id  int
+}
+
+func (p wirPage) key() pageKey { return pageKey{p.AppID, p.ID} }
+
+// isListed reports whether the page is in its app's current listing.
+func (c *wirClient) isListed(k pageKey) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.pages[k.app][k.id]
+	return ok
+}
+
 // wirClient is one connection to webinspectord.
 type wirClient struct {
 	conn    io.ReadWriteCloser
@@ -135,7 +152,17 @@ func (c *wirClient) handle(selector string, arg map[string]any) {
 		c.mu.Lock()
 		delete(c.apps, id)
 		delete(c.pages, id)
+		delete(c.awaiting, id)
+		var gone []*wirSession
+		for _, s := range c.sessions {
+			if s.page.AppID == id {
+				gone = append(gone, s)
+			}
+		}
 		c.mu.Unlock()
+		for _, s := range gone {
+			s.fail(errPageClosed) // the app is gone: its pages will not answer
+		}
 	case "_rpc_applicationSentListing:":
 		c.setListing(arg)
 	case "_rpc_applicationSentData:":

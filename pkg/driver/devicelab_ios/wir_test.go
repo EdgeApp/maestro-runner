@@ -161,6 +161,13 @@ func (f *fakeWIRD) answer(arg map[string]any) {
 	}
 }
 
+// setState changes what a page answers.
+func (f *fakeWIRD) setState(page int, state string) {
+	f.mu.Lock()
+	f.states[page] = state
+	f.mu.Unlock()
+}
+
 // sessionFor returns the session id opened on a page.
 func (f *fakeWIRD) sessionFor(page int) string {
 	f.mu.Lock()
@@ -198,12 +205,12 @@ func TestWIRListsOnlyTheAppsWebPages(t *testing.T) {
 func TestLoadingReadsTheVisiblePageThroughItsTarget(t *testing.T) {
 	for _, targets := range []bool{true, false} {
 		states := map[int]string{2: "hidden", 3: "loading"}
-		_, in := startInspector(t, map[int]string{2: "https://tab1.example", 3: "https://tab2.example"}, states, targets)
+		f, in := startInspector(t, map[int]string{2: "https://tab1.example", 3: "https://tab2.example"}, states, targets)
 		loading, err := in.Loading(context.Background(), "com.example.browser")
 		if err != nil || !loading {
 			t.Errorf("targets=%v: visible page loading: loading=%v err=%v, want true", targets, loading, err)
 		}
-		states[3] = "complete"
+		f.setState(3, "complete")
 		if loading, _ := in.Loading(context.Background(), "com.example.browser"); loading {
 			t.Errorf("targets=%v: a complete visible page and a hidden one read as loading", targets)
 		}
@@ -275,8 +282,8 @@ func TestSilentPageIsBusyWhenYoungThenLeftAlone(t *testing.T) {
 		t.Errorf("a page in backoff cost %v", time.Since(start))
 	}
 	in.mu.Lock()
-	in.retryAt[4] = time.Time{}
-	in.firstSeen[4] = time.Now().Add(-time.Minute)
+	in.retryAt[pageKey{"PID:42", 4}] = time.Time{}
+	in.firstSeen[pageKey{"PID:42", 4}] = time.Now().Add(-time.Minute)
 	in.mu.Unlock()
 	if loading, _ := in.Loading(context.Background(), "com.example.browser"); loading {
 		t.Error("an old silent page read as loading")
@@ -363,13 +370,54 @@ func TestVisiblePageDecidesWithoutWaitingForHiddenTabs(t *testing.T) {
 		t.Errorf("check took %v, waiting on a hidden tab", took)
 	}
 	in.mu.Lock()
-	_, backedOff := in.retryAt[2]
-	_, kept := in.pages[2]
+	_, backedOff := in.retryAt[pageKey{"PID:42", 2}]
+	_, kept := in.pages[pageKey{"PID:42", 2}]
 	in.mu.Unlock()
 	if backedOff {
 		t.Error("a hidden tab cut short was put in backoff")
 	}
 	if !kept {
 		t.Error("a hidden tab cut short lost its session")
+	}
+}
+
+func TestRelaunchedAppDoesNotReuseTheOldPage(t *testing.T) {
+	// Page ids restart at 1 in every app process. After a relaunch the new
+	// page 2 must get a new session, not the dead one of the old process.
+	f, in := startInspector(t, map[int]string{2: "https://a.example"}, map[int]string{2: "complete"}, true)
+	if _, err := in.Loading(context.Background(), "com.example.browser"); err != nil {
+		t.Fatal(err)
+	}
+	old := in.pages[pageKey{"PID:42", 2}]
+	if old == nil {
+		t.Fatal("no session on the first page")
+	}
+	// The app relaunches: new process id, same page id, page now loading.
+	f.write("_rpc_applicationDisconnected:", map[string]any{"WIRApplicationIdentifierKey": "PID:42"})
+	f.mu.Lock()
+	f.appID = "PID:43"
+	f.states[2] = "loading"
+	f.mu.Unlock()
+	f.write("_rpc_applicationConnected:", map[string]any{"WIRApplicationIdentifierKey": "PID:43", "WIRApplicationBundleIdentifierKey": "com.example.browser"})
+	time.Sleep(100 * time.Millisecond)
+	loading, err := in.Loading(context.Background(), "com.example.browser")
+	if err != nil || !loading {
+		t.Errorf("new process's loading page: loading=%v err=%v, want true", loading, err)
+	}
+	in.mu.Lock()
+	_, stale := in.pages[pageKey{"PID:42", 2}]
+	fresh := in.pages[pageKey{"PID:43", 2}]
+	in.mu.Unlock()
+	if stale {
+		t.Error("the old process's session was kept")
+	}
+	if fresh == nil || fresh == old {
+		t.Error("the new process's page did not get its own session")
+	}
+	old.sess.mu.Lock()
+	closed := old.sess.err != nil
+	old.sess.mu.Unlock()
+	if !closed {
+		t.Error("the old process's session was not closed")
 	}
 }

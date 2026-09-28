@@ -50,10 +50,10 @@ type inspector struct {
 	client *wirClient
 
 	mu        sync.Mutex
-	pages     map[int]*pageConn // page id → open session
-	firstSeen map[int]time.Time
-	retryAt   map[int]time.Time // a failed page is not asked before this
-	lastSig   map[string]string // bundle id → last listing
+	pages     map[pageKey]*pageConn // open sessions
+	firstSeen map[pageKey]time.Time
+	retryAt   map[pageKey]time.Time // a failed page is not asked before this
+	lastSig   map[string]string     // bundle id → last listing
 
 	// evalTimeout bounds one page check (webEvalTimeout; tests shorten it).
 	evalTimeout time.Duration
@@ -78,9 +78,9 @@ func openInspector(ctx context.Context, socket string) (*inspector, error) {
 func newInspector(client *wirClient) *inspector {
 	return &inspector{
 		client:    client,
-		pages:     map[int]*pageConn{},
-		firstSeen: map[int]time.Time{},
-		retryAt:   map[int]time.Time{},
+		pages:     map[pageKey]*pageConn{},
+		firstSeen: map[pageKey]time.Time{},
+		retryAt:   map[pageKey]time.Time{},
 		lastSig:   map[string]string{},
 	}
 }
@@ -102,11 +102,12 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 	prev, known := in.lastSig[bundleID]
 	in.lastSig[bundleID] = sig
 	for _, p := range pages {
-		if _, ok := in.firstSeen[p.ID]; !ok {
-			in.firstSeen[p.ID] = now
+		if _, ok := in.firstSeen[p.key()]; !ok {
+			in.firstSeen[p.key()] = now
 		}
 	}
 	in.mu.Unlock()
+	in.forgetGone()
 
 	// A page appearing or navigating shows up in the listing before (or
 	// while) it loads; DDG's tab page was listed only after its load began.
@@ -133,7 +134,7 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 	asked := 0
 	for _, p := range pages {
 		in.mu.Lock()
-		retry := in.retryAt[p.ID]
+		retry := in.retryAt[p.key()]
 		in.mu.Unlock()
 		if now.Before(retry) {
 			continue
@@ -159,8 +160,8 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 			// driver's connect backoff. A young page that does not answer is
 			// busy loading; an old one is a background tab or gone.
 			in.mu.Lock()
-			in.retryAt[a.page.ID] = time.Now().Add(pageRetry)
-			seen := in.firstSeen[a.page.ID]
+			in.retryAt[a.page.key()] = time.Now().Add(pageRetry)
+			seen := in.firstSeen[a.page.key()]
 			in.mu.Unlock()
 			if time.Since(seen) < youngPage {
 				silentYoung = true
@@ -177,6 +178,30 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 		loading = true
 	}
 	return loading, nil
+}
+
+// forgetGone closes sessions, and drops the history, of pages no longer
+// listed: an app that relaunched starts its page ids again at 1, and a new
+// page must not inherit the old one's session, backoff or age.
+func (in *inspector) forgetGone() {
+	in.mu.Lock()
+	var gone []*pageConn
+	for key, pc := range in.pages {
+		if !in.client.isListed(key) {
+			gone = append(gone, pc)
+			delete(in.pages, key)
+		}
+	}
+	for key := range in.firstSeen {
+		if !in.client.isListed(key) {
+			delete(in.firstSeen, key)
+			delete(in.retryAt, key)
+		}
+	}
+	in.mu.Unlock()
+	for _, pc := range gone {
+		pc.close()
+	}
 }
 
 // pagesSignature identifies an app's set of pages and where they are.
@@ -207,7 +232,7 @@ func (in *inspector) pageState(ctx context.Context, page wirPage) (string, *page
 		// A page that is only slow (a throttled hidden tab) keeps its
 		// session; a protocol failure closes it.
 		if cctx.Err() == nil {
-			in.drop(page.ID)
+			in.drop(page.key())
 		}
 		return "", nil, err
 	}
@@ -221,7 +246,7 @@ func (in *inspector) pageState(ctx context.Context, page wirPage) (string, *page
 // conn returns the page's open session, opening it the first time.
 func (in *inspector) conn(ctx context.Context, page wirPage) (*pageConn, error) {
 	in.mu.Lock()
-	pc, ok := in.pages[page.ID]
+	pc, ok := in.pages[page.key()]
 	in.mu.Unlock()
 	if ok {
 		return pc, nil
@@ -231,15 +256,15 @@ func (in *inspector) conn(ctx context.Context, page wirPage) (*pageConn, error) 
 		return nil, err
 	}
 	in.mu.Lock()
-	in.pages[page.ID] = pc
+	in.pages[page.key()] = pc
 	in.mu.Unlock()
 	return pc, nil
 }
 
-func (in *inspector) drop(pageID int) {
+func (in *inspector) drop(key pageKey) {
 	in.mu.Lock()
-	pc := in.pages[pageID]
-	delete(in.pages, pageID)
+	pc := in.pages[key]
+	delete(in.pages, key)
 	in.mu.Unlock()
 	if pc != nil {
 		pc.close()
