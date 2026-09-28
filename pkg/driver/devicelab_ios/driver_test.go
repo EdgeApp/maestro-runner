@@ -151,3 +151,20 @@ func TestCloseRemovesStagedApps(t *testing.T) {
 		t.Fatal("staged copy should be removed")
 	}
 }
+
+func TestIdleWaitOnlyAfterPresses(t *testing.T) {
+	d, fa, _ := newTestDriver(t, screenOf(node(1, "Button", "Go", 20, 100, 100, 44)))
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Go"}})
+	d.Execute(&flow.AssertVisibleStep{Selector: flow.Selector{Text: "Go"}})
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Go"}}) // settles after a tap
+	d.Execute(&flow.ScrollStep{Direction: "down"})                  // settles after a tap
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Go"}}) // settles after a scroll
+	var modes []string
+	for _, a := range fa.sent("settle") {
+		modes = append(modes, a.Quiescence)
+	}
+	want := []string{"all", "all", ""}
+	if strings.Join(modes, ",") != strings.Join(want, ",") {
+		t.Errorf("idle-wait modes per settle = %q, want %q", modes, want)
+	}
+}
