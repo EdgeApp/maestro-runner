@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +77,10 @@ func NewDriver(agent agentAPI, info *core.PlatformInfo, udid string) *Driver {
 			return simctl(context.Background(), 5*time.Minute, args...)
 		},
 	}
-	d.openWeb = d.openSimulatorInspector
+	// DL_IOS_WEB_READY=0 turns the web readiness check off (A/B timing).
+	if os.Getenv("DL_IOS_WEB_READY") != "0" {
+		d.openWeb = d.openSimulatorInspector
+	}
 	return d
 }
 
