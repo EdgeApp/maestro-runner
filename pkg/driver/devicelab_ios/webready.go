@@ -13,7 +13,6 @@ import (
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/webinspector"
-	"github.com/gorilla/websocket"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
@@ -44,9 +43,8 @@ type webPages interface {
 	Close() error
 }
 
-// visibleLoadingJS is true when this page is the visible one and has not
-// finished loading.
-const visibleLoadingJS = `document.visibilityState === "visible" && document.readyState !== "complete"`
+// pageStateJS is "hidden" for a page not on screen, else its readyState.
+const pageStateJS = `document.visibilityState === "visible" ? document.readyState : "hidden"`
 
 // inspector reads page state through the simulator's webinspectord: go-ios's
 // inspector client, bridged to CDP on a local port.
@@ -58,7 +56,7 @@ type inspector struct {
 	// socks keeps one CDP connection per page: the bridge serves a page's
 	// first inspector session only, and a second connection timed out.
 	mu    sync.Mutex
-	socks map[int]*pageSocket
+	socks map[int]*pageConn
 
 	// firstSeen, dead and lastSig track pages across checks: when each was
 	// first listed, which stopped answering, and each app's last listing.
@@ -68,12 +66,6 @@ type inspector struct {
 
 	// evalTimeout bounds one page check (webEvalTimeout; tests shorten it).
 	evalTimeout time.Duration
-}
-
-// pageSocket is a page's CDP connection and its next request id.
-type pageSocket struct {
-	ws     *websocket.Conn
-	nextID int
 }
 
 // pageLister is the part of go-ios's inspector client used here.
@@ -196,8 +188,9 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 			continue
 		}
 		start := time.Now()
-		busy, err := in.evaluateBool(ctx, p.ID, visibleLoadingJS)
-		logger.Debug("[devicelab-ios] web page %d %s loading=%v err=%v (%v)", p.ID, p.URL, busy, err, time.Since(start).Round(time.Millisecond))
+		state, pc, err := in.pageState(ctx, p.ID)
+		busy := err == nil && state != "hidden" && (state != "complete" || pc.networkBusy(time.Now()))
+		logger.Debug("[devicelab-ios] web page %d %s state=%s busy=%v err=%v (%v)", p.ID, p.URL, state, busy, err, time.Since(start).Round(time.Millisecond))
 		if err != nil {
 			// A page's inspector session cannot be reopened once it fails,
 			// so never ask it again. A young page that does not answer is
@@ -227,89 +220,66 @@ func pagesSignature(pages []webinspector.Page) string {
 	return strings.Join(parts, " ")
 }
 
-// evaluateBool runs a boolean expression on one page over the CDP bridge,
-// reusing the page's connection.
-func (in *inspector) evaluateBool(ctx context.Context, pageID int, expr string) (bool, error) {
+// pageState reads one page's visibility and readyState over its reused
+// connection: "hidden", or the readyState of the visible page.
+func (in *inspector) pageState(ctx context.Context, pageID int) (string, *pageConn, error) {
 	timeout := in.evalTimeout
 	if timeout <= 0 {
 		timeout = webEvalTimeout
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	in.mu.Lock()
-	defer in.mu.Unlock()
-	ps, err := in.socket(cctx, pageID)
+	pc, err := in.conn(cctx, pageID)
 	if err != nil {
-		return false, err
+		return "", nil, err
 	}
-	v, err := ps.evaluate(cctx, expr)
+	raw, err := pc.evaluate(cctx, pageStateJS)
 	if err != nil {
-		_ = ps.ws.Close()
-		delete(in.socks, pageID)
+		in.drop(pageID)
+		return "", nil, err
 	}
-	return v, err
+	var state string
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return "", nil, fmt.Errorf("page state %s: %w", raw, err)
+	}
+	return state, pc, nil
 }
 
-// socket returns the page's open connection, dialing it the first time.
-func (in *inspector) socket(ctx context.Context, pageID int) (*pageSocket, error) {
-	if ps, ok := in.socks[pageID]; ok {
-		return ps, nil
+// conn returns the page's open connection, dialing it the first time.
+func (in *inspector) conn(ctx context.Context, pageID int) (*pageConn, error) {
+	in.mu.Lock()
+	pc, ok := in.socks[pageID]
+	in.mu.Unlock()
+	if ok {
+		return pc, nil
 	}
-	ws, _, err := websocket.DefaultDialer.DialContext(ctx, fmt.Sprintf("ws://%s/devtools/page/%d", in.addr, pageID), nil)
+	pc, err := dialPage(ctx, fmt.Sprintf("ws://%s/devtools/page/%d", in.addr, pageID))
 	if err != nil {
 		return nil, err
 	}
+	in.mu.Lock()
 	if in.socks == nil {
-		in.socks = map[int]*pageSocket{}
+		in.socks = map[int]*pageConn{}
 	}
-	ps := &pageSocket{ws: ws, nextID: 1}
-	in.socks[pageID] = ps
-	return ps, nil
+	in.socks[pageID] = pc
+	in.mu.Unlock()
+	return pc, nil
 }
 
-func (ps *pageSocket) evaluate(ctx context.Context, expr string) (bool, error) {
-	id := ps.nextID
-	ps.nextID++
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = ps.ws.SetReadDeadline(deadline)
-		_ = ps.ws.SetWriteDeadline(deadline)
-	}
-	req := map[string]any{"id": id, "method": "Runtime.evaluate",
-		"params": map[string]any{"expression": expr, "returnByValue": true}}
-	if err := ps.ws.WriteJSON(req); err != nil {
-		return false, err
-	}
-	for {
-		var msg struct {
-			ID     int `json:"id"`
-			Result struct {
-				Result struct {
-					Value json.RawMessage `json:"value"`
-				} `json:"result"`
-			} `json:"result"`
-			Error json.RawMessage `json:"error"`
-		}
-		if err := ps.ws.ReadJSON(&msg); err != nil {
-			return false, err
-		}
-		if msg.ID != id {
-			continue // events, and replies to requests that timed out
-		}
-		if len(msg.Error) > 0 {
-			return false, fmt.Errorf("evaluate: %s", msg.Error)
-		}
-		var v bool
-		if err := json.Unmarshal(msg.Result.Result.Value, &v); err != nil {
-			return false, err
-		}
-		return v, nil
+func (in *inspector) drop(pageID int) {
+	in.mu.Lock()
+	pc := in.socks[pageID]
+	delete(in.socks, pageID)
+	in.mu.Unlock()
+	if pc != nil {
+		pc.close()
 	}
 }
 
 func (in *inspector) Close() error {
 	in.mu.Lock()
-	for id, ps := range in.socks {
-		_ = ps.ws.Close()
+	for id, pc := range in.socks {
+		pc.close()
 		delete(in.socks, id)
 	}
 	in.mu.Unlock()

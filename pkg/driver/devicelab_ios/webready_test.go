@@ -127,14 +127,14 @@ func TestOpenSimulatorInspectorNeedsSocket(t *testing.T) {
 	}
 }
 
-// cdpPage serves page CDP sockets, answering every Runtime.evaluate with
-// value; conns counts connections.
-func cdpPage(t *testing.T, value string) *httptest.Server {
-	srv, _ := cdpPageCounting(t, value)
+// cdpPage serves page CDP sockets. Runtime.evaluate answers with the page
+// state (a readyState, or "hidden"); other commands get an empty result.
+func cdpPage(t *testing.T, state string) *httptest.Server {
+	srv, _ := cdpPageCounting(t, state)
 	return srv
 }
 
-func cdpPageCounting(t *testing.T, value string) (*httptest.Server, *atomic.Int32) {
+func cdpPageCounting(t *testing.T, state string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var conns atomic.Int32
 	up := websocket.Upgrader{}
@@ -147,25 +147,31 @@ func cdpPageCounting(t *testing.T, value string) (*httptest.Server, *atomic.Int3
 		defer ws.Close()
 		for {
 			var req struct {
-				ID int `json:"id"`
+				ID     int    `json:"id"`
+				Method string `json:"method"`
 			}
 			if err := ws.ReadJSON(&req); err != nil {
 				return
 			}
 			_ = ws.WriteJSON(map[string]any{"method": "Runtime.consoleAPICalled"})
-			_ = ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"id":%d,"result":{"result":{"type":"boolean","value":%s}}}`, req.ID, value)))
+			reply := fmt.Sprintf(`{"id":%d,"result":{}}`, req.ID)
+			if req.Method == "Runtime.evaluate" {
+				reply = fmt.Sprintf(`{"id":%d,"result":{"result":{"type":"string","value":%q}}}`, req.ID, state)
+			}
+			_ = ws.WriteMessage(websocket.TextMessage, []byte(reply))
 		}
 	}))
 	return srv, &conns
 }
 
-func TestEvaluateReusesThePageConnection(t *testing.T) {
-	srv, conns := cdpPageCounting(t, "false")
+func TestPageStateReusesThePageConnection(t *testing.T) {
+	srv, conns := cdpPageCounting(t, "complete")
 	defer srv.Close()
 	in := &inspector{client: &fakeLister{}, addr: strings.TrimPrefix(srv.URL, "http://")}
 	for i := 0; i < 3; i++ {
-		if _, err := in.evaluateBool(context.Background(), 7, visibleLoadingJS); err != nil {
-			t.Fatalf("check %d: %v", i, err)
+		state, _, err := in.pageState(context.Background(), 7)
+		if err != nil || state != "complete" {
+			t.Fatalf("check %d: state=%q err=%v", i, state, err)
 		}
 	}
 	if n := conns.Load(); n != 1 {
@@ -177,22 +183,7 @@ func TestEvaluateReusesThePageConnection(t *testing.T) {
 	}
 }
 
-func TestEvaluateBoolReadsTheAnswer(t *testing.T) {
-	for _, c := range []struct {
-		value string
-		want  bool
-	}{{"true", true}, {"false", false}} {
-		srv := cdpPage(t, c.value)
-		in := &inspector{addr: strings.TrimPrefix(srv.URL, "http://")}
-		got, err := in.evaluateBool(context.Background(), 1, visibleLoadingJS)
-		srv.Close()
-		if err != nil || got != c.want {
-			t.Errorf("value %s: got %v, %v; want %v", c.value, got, err, c.want)
-		}
-	}
-}
-
-func TestEvaluateBoolReportsErrors(t *testing.T) {
+func TestPageStateReportsErrors(t *testing.T) {
 	up := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := up.Upgrade(w, r, nil)
@@ -200,17 +191,31 @@ func TestEvaluateBoolReportsErrors(t *testing.T) {
 			return
 		}
 		defer ws.Close()
-		var req map[string]any
-		_ = ws.ReadJSON(&req)
-		_ = ws.WriteMessage(websocket.TextMessage, []byte(`{"id":1,"error":{"message":"no page"}}`))
+		for {
+			var req struct {
+				ID     int    `json:"id"`
+				Method string `json:"method"`
+			}
+			if ws.ReadJSON(&req) != nil {
+				return
+			}
+			reply := fmt.Sprintf(`{"id":%d,"result":{}}`, req.ID)
+			if req.Method == "Runtime.evaluate" {
+				reply = fmt.Sprintf(`{"id":%d,"error":{"message":"no page"}}`, req.ID)
+			}
+			_ = ws.WriteMessage(websocket.TextMessage, []byte(reply))
+		}
 	}))
 	defer srv.Close()
-	in := &inspector{addr: strings.TrimPrefix(srv.URL, "http://")}
-	if _, err := in.evaluateBool(context.Background(), 1, "1"); err == nil {
+	in := &inspector{client: &fakeLister{}, addr: strings.TrimPrefix(srv.URL, "http://")}
+	if _, _, err := in.pageState(context.Background(), 1); err == nil {
 		t.Error("an error reply was not reported")
 	}
+	if len(in.socks) != 0 {
+		t.Error("a failed page connection was kept")
+	}
 	in.addr = "127.0.0.1:1"
-	if _, err := in.evaluateBool(context.Background(), 1, "1"); err == nil {
+	if _, _, err := in.pageState(context.Background(), 1); err == nil {
 		t.Error("a dead bridge was not reported")
 	}
 }
@@ -235,6 +240,10 @@ func TestInspectorOnSimulator(t *testing.T) {
 	}
 	start := time.Now()
 	loading, err := in.Loading(context.Background(), app)
+	if err == nil {
+		time.Sleep(time.Second) // let network events arrive, then check again
+		loading, err = in.Loading(context.Background(), app)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +271,7 @@ func page(bundle string, id int, typ webinspector.WIRType, url string) webinspec
 }
 
 func TestLoadingChecksOnlyTheAppsWebPages(t *testing.T) {
-	srv := cdpPage(t, "true")
+	srv := cdpPage(t, "loading")
 	defer srv.Close()
 	lister := &fakeLister{pages: []webinspector.ApplicationPage{
 		page("com.other", 1, webinspector.WIRTypeWebPage, "https://other.example"),
@@ -315,7 +324,7 @@ func TestLoadingIgnoresOldSilentPages(t *testing.T) {
 }
 
 func TestLoadingCountsANewPageOnce(t *testing.T) {
-	srv := cdpPage(t, "false")
+	srv := cdpPage(t, "complete")
 	defer srv.Close()
 	lister := &fakeLister{pages: []webinspector.ApplicationPage{
 		page("com.app", 2, webinspector.WIRTypeWebPage, "https://one.example"),
