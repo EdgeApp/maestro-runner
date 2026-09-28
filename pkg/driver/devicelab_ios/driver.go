@@ -390,8 +390,25 @@ func movesScreen(step flow.Step) bool {
 // error: the next step polls anyway.
 func (d *Driver) settle(timeout time.Duration) {
 	d.waitForWebLoad()
-	// DL_IOS_QUIESCENCE=all|main adds XCTest's app-idle wait (an experiment).
-	_, _ = d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds()), Quiescence: os.Getenv("DL_IOS_QUIESCENCE")})
+	_, _ = d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds()), Quiescence: quiescenceMode()})
+}
+
+// quiescenceMode is XCTest's app-idle wait that settle runs first. An app
+// can finish a change on its main thread after the screen looks still: DDG
+// saves a password, then updates its navigation about a second later and
+// undid a back tap sent in between. XCTest's wait (as WDA uses it) closed
+// that race, 5 of 5, for about 0.2s per settle; the main-run-loop-only mode
+// cost the same. DL_IOS_QUIESCENCE=off turns it off, =main keeps animations
+// out.
+func quiescenceMode() string {
+	switch mode := os.Getenv("DL_IOS_QUIESCENCE"); mode {
+	case "off":
+		return ""
+	case "main":
+		return mode
+	default:
+		return "all"
+	}
 }
 
 func firstNonEmpty(values ...string) string {

@@ -167,3 +167,12 @@ func TestInspectorOnSimulator(t *testing.T) {
 		}
 	}
 }
+
+func TestQuiescenceMode(t *testing.T) {
+	for env, want := range map[string]string{"": "all", "all": "all", "main": "main", "off": ""} {
+		t.Setenv("DL_IOS_QUIESCENCE", env)
+		if got := quiescenceMode(); got != want {
+			t.Errorf("DL_IOS_QUIESCENCE=%q: mode %q, want %q", env, got, want)
+		}
+	}
+}
