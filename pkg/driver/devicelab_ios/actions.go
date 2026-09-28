@@ -517,12 +517,16 @@ func (d *Driver) inputText(s *flow.InputTextStep) *core.CommandResult {
 		return core.SuccessResult("nothing to type", nil)
 	}
 	resp, err := d.call("type", &Args{Text: s.Text, Speed: d.typingSpeed})
-	// Nothing had focus. When the step before tapped something (the usual
-	// "tapOn field, inputText" pair), that tap did not take: tap the same
-	// point once more and type again.
-	if isNoFocus(err) && d.prevTap != nil {
-		logger.Debug("[devicelab-ios] inputText: no field has focus; re-tapping (%.0f,%.0f)", d.prevTap.x, d.prevTap.y)
-		if terr := d.act("tap", d.prevTap.x, d.prevTap.y, nil); terr == nil {
+	// Nothing had focus: the tap meant to focus the field did not take. That
+	// is this step's own tap when it has a selector, else the step before's
+	// (the usual "tapOn field, inputText" pair). Tap it once more and type.
+	retry := d.prevTap
+	if !s.Selector.IsEmpty() {
+		retry = d.lastTap
+	}
+	if isNoFocus(err) && retry != nil {
+		logger.Debug("[devicelab-ios] inputText: no field has focus; re-tapping (%.0f,%.0f)", retry.x, retry.y)
+		if terr := d.act("tap", retry.x, retry.y, nil); terr == nil {
 			d.settle(defaultSettleTimeout)
 			resp, err = d.call("type", &Args{Text: s.Text, Speed: d.typingSpeed})
 		}

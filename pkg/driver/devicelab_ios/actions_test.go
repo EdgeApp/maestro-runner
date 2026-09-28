@@ -669,3 +669,36 @@ func TestTapOnFirstLookupDoesNotSettleAgain(t *testing.T) {
 		t.Errorf("settles = %d, want 0 for an element found at once", n)
 	}
 }
+
+func TestInputTextWithSelectorRetapsItsOwnField(t *testing.T) {
+	// The step before tapped a button elsewhere; this step taps its own
+	// field. When the field takes no focus, the re-tap goes to the field.
+	button := node(1, "Button", "Next", 20, 600, 360, 44)
+	field := node(2, "TextField", "Email", 20, 100, 360, 44)
+	typed := 0
+	d, f, _ := newTestDriver(t, func(cmd string, a Args) (*Response, error) {
+		switch cmd {
+		case "find", "snapshot":
+			return tree(button, field), nil
+		case "type":
+			typed++
+			if typed == 1 {
+				return nil, &AgentError{Code: "NO_FOCUS", Message: "no field has keyboard focus"}
+			}
+		}
+		return ok(&Payload{}), nil
+	})
+	if r := d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "Next"}}); !r.Success {
+		t.Fatal(r.Message)
+	}
+	if r := d.Execute(&flow.InputTextStep{Selector: flow.Selector{Text: "Email"}, Text: "a@b.c"}); !r.Success {
+		t.Fatal(r.Message)
+	}
+	acts := f.sent("act")
+	if len(acts) != 3 {
+		t.Fatalf("taps = %d, want 3 (button, field, re-tap of the field)", len(acts))
+	}
+	if y := *acts[2].Y; y < 100 || y > 144 {
+		t.Errorf("re-tap at y=%v, want the field (100-144), not the button", y)
+	}
+}
