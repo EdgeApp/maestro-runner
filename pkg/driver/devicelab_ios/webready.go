@@ -98,7 +98,29 @@ func openInspector(ctx context.Context, socket string) (*inspector, error) {
 			logger.Debug("[devicelab-ios] web inspector bridge stopped: %v", err)
 		}
 	}()
+	// Serve listens in the goroutine; the first check raced it and was
+	// refused. Wait until the bridge accepts connections.
+	if err := waitListening(server.Addr(), webCallTimeout); err != nil {
+		stop()
+		_ = client.Close()
+		return nil, err
+	}
 	return &inspector{client: client, addr: server.Addr(), cancel: stop}, nil
+}
+
+// waitListening waits until addr accepts TCP connections.
+func waitListening(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			return c.Close()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("inspector bridge not listening on %s: %w", addr, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func freePort() (int, error) {

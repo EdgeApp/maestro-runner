@@ -261,3 +261,14 @@ func TestLoadingSkipsUnreachablePagesAndReportsListErrors(t *testing.T) {
 		t.Error("a listing error was not reported")
 	}
 }
+
+func TestWaitListening(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	if err := waitListening(strings.TrimPrefix(srv.URL, "http://"), time.Second); err != nil {
+		t.Errorf("a listening server: %v", err)
+	}
+	if err := waitListening("127.0.0.1:1", 50*time.Millisecond); err == nil {
+		t.Error("a closed port was reported listening")
+	}
+}
