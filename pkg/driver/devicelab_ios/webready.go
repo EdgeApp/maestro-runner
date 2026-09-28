@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,11 @@ const (
 	webPollEvery   = 100 * time.Millisecond
 	webCallTimeout = 2 * time.Second
 	listingWait    = 500 * time.Millisecond
+	// webEvalTimeout bounds one page check; a busy page answers slowly.
+	webEvalTimeout = time.Second
+	// youngPage is how long after a page is first listed a failed check
+	// still means "busy loading".
+	youngPage = 5 * time.Second
 )
 
 // webPages tells whether an app's visible web page is still loading.
@@ -53,6 +59,15 @@ type inspector struct {
 	// first inspector session only, and a second connection timed out.
 	mu    sync.Mutex
 	socks map[int]*pageSocket
+
+	// firstSeen, dead and lastSig track pages across checks: when each was
+	// first listed, which stopped answering, and each app's last listing.
+	firstSeen map[int]time.Time
+	dead      map[int]bool
+	lastSig   map[string]string
+
+	// evalTimeout bounds one page check (webEvalTimeout; tests shorten it).
+	evalTimeout time.Duration
 }
 
 // pageSocket is a page's CDP connection and its next request id.
@@ -133,11 +148,12 @@ func freePort() (int, error) {
 }
 
 func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error) {
-	pages, err := in.client.ListPages(ctx, 0)
+	listed, err := in.client.ListPages(ctx, 0)
 	if err != nil {
 		return false, err
 	}
-	for _, p := range pages {
+	var pages []webinspector.Page
+	for _, p := range listed {
 		if p.Application.BundleID != bundleID {
 			continue
 		}
@@ -147,23 +163,78 @@ func (in *inspector) Loading(ctx context.Context, bundleID string) (bool, error)
 		if !strings.HasPrefix(p.Page.URL, "http") {
 			continue // extension and internal pages never "load" for the user
 		}
-		start := time.Now()
-		loading, err := in.evaluateBool(ctx, p.Page.ID, visibleLoadingJS)
-		logger.Debug("[devicelab-ios] web page %d %s loading=%v err=%v (%v)", p.Page.ID, p.Page.URL, loading, err, time.Since(start).Round(time.Millisecond))
-		if err != nil {
-			continue // a page closing mid-check is not a loading page
-		}
-		if loading {
-			return true, nil
+		pages = append(pages, p.Page)
+	}
+
+	in.mu.Lock()
+	now := time.Now()
+	if in.firstSeen == nil {
+		in.firstSeen, in.dead, in.lastSig = map[int]time.Time{}, map[int]bool{}, map[string]string{}
+	}
+	sig := pagesSignature(pages)
+	prev, known := in.lastSig[bundleID]
+	in.lastSig[bundleID] = sig
+	for _, p := range pages {
+		if _, ok := in.firstSeen[p.ID]; !ok {
+			in.firstSeen[p.ID] = now
 		}
 	}
-	return false, nil
+	in.mu.Unlock()
+
+	// A page appearing or navigating shows up in the listing before (or
+	// while) it loads; DDG's tab page was listed only after its load began.
+	// Count the change once, so the next check looks at the new page.
+	loading := known && sig != prev
+	if loading {
+		logger.Debug("[devicelab-ios] web pages changed: %s", sig)
+	}
+	for _, p := range pages {
+		in.mu.Lock()
+		dead, seen := in.dead[p.ID], in.firstSeen[p.ID]
+		in.mu.Unlock()
+		if dead {
+			continue
+		}
+		start := time.Now()
+		busy, err := in.evaluateBool(ctx, p.ID, visibleLoadingJS)
+		logger.Debug("[devicelab-ios] web page %d %s loading=%v err=%v (%v)", p.ID, p.URL, busy, err, time.Since(start).Round(time.Millisecond))
+		if err != nil {
+			// A page's inspector session cannot be reopened once it fails,
+			// so never ask it again. A young page that does not answer is
+			// busy loading; an old one is a background tab or gone.
+			in.mu.Lock()
+			in.dead[p.ID] = true
+			in.mu.Unlock()
+			if time.Since(seen) < youngPage {
+				loading = true
+			}
+			continue
+		}
+		if busy {
+			loading = true
+		}
+	}
+	return loading, nil
+}
+
+// pagesSignature identifies an app's set of pages and where they are.
+func pagesSignature(pages []webinspector.Page) string {
+	parts := make([]string, 0, len(pages))
+	for _, p := range pages {
+		parts = append(parts, fmt.Sprintf("%d=%s", p.ID, p.URL))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
 }
 
 // evaluateBool runs a boolean expression on one page over the CDP bridge,
 // reusing the page's connection.
 func (in *inspector) evaluateBool(ctx context.Context, pageID int, expr string) (bool, error) {
-	cctx, cancel := context.WithTimeout(ctx, webCallTimeout)
+	timeout := in.evalTimeout
+	if timeout <= 0 {
+		timeout = webEvalTimeout
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	in.mu.Lock()
 	defer in.mu.Unlock()

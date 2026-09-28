@@ -248,17 +248,58 @@ func TestLoadingChecksOnlyTheAppsWebPages(t *testing.T) {
 	}
 }
 
-func TestLoadingSkipsUnreachablePagesAndReportsListErrors(t *testing.T) {
+func TestLoadingTreatsYoungSilentPagesAsBusyThenSkipsThem(t *testing.T) {
 	lister := &fakeLister{pages: []webinspector.ApplicationPage{
 		page("com.app", 4, webinspector.WIRTypeWebPage, "https://app.example"),
 	}}
-	in := &inspector{client: lister, addr: "127.0.0.1:1"}
+	in := &inspector{client: lister, addr: "127.0.0.1:1", evalTimeout: 50 * time.Millisecond}
+	if loading, err := in.Loading(context.Background(), "com.app"); err != nil || !loading {
+		t.Errorf("young page not answering: loading=%v err=%v, want true", loading, err)
+	}
+	if !in.dead[4] {
+		t.Error("the silent page was not marked dead")
+	}
 	if loading, err := in.Loading(context.Background(), "com.app"); err != nil || loading {
-		t.Errorf("unreachable page: loading=%v err=%v, want false, nil", loading, err)
+		t.Errorf("dead page asked again: loading=%v err=%v, want false", loading, err)
 	}
 	lister.err = errBoom
 	if _, err := in.Loading(context.Background(), "com.app"); err == nil {
 		t.Error("a listing error was not reported")
+	}
+}
+
+func TestLoadingIgnoresOldSilentPages(t *testing.T) {
+	lister := &fakeLister{pages: []webinspector.ApplicationPage{
+		page("com.app", 4, webinspector.WIRTypeWebPage, "https://app.example"),
+	}}
+	in := &inspector{client: lister, addr: "127.0.0.1:1", evalTimeout: 50 * time.Millisecond,
+		firstSeen: map[int]time.Time{4: time.Now().Add(-time.Minute)}, dead: map[int]bool{},
+		lastSig: map[string]string{"com.app": "4=https://app.example"}}
+	if loading, err := in.Loading(context.Background(), "com.app"); err != nil || loading {
+		t.Errorf("old background page not answering: loading=%v err=%v, want false", loading, err)
+	}
+}
+
+func TestLoadingCountsANewPageOnce(t *testing.T) {
+	srv := cdpPage(t, "false")
+	defer srv.Close()
+	lister := &fakeLister{pages: []webinspector.ApplicationPage{
+		page("com.app", 2, webinspector.WIRTypeWebPage, "https://one.example"),
+	}}
+	in := &inspector{client: lister, addr: strings.TrimPrefix(srv.URL, "http://")}
+	if loading, _ := in.Loading(context.Background(), "com.app"); loading {
+		t.Error("the first listing counted as a change")
+	}
+	lister.pages = append(lister.pages, page("com.app", 8, webinspector.WIRTypeWebPage, "https://two.example"))
+	if loading, _ := in.Loading(context.Background(), "com.app"); !loading {
+		t.Error("a new page did not count as loading")
+	}
+	if loading, _ := in.Loading(context.Background(), "com.app"); loading {
+		t.Error("an unchanged listing still counted as loading")
+	}
+	lister.pages[1] = page("com.app", 8, webinspector.WIRTypeWebPage, "https://two.example/next")
+	if loading, _ := in.Loading(context.Background(), "com.app"); !loading {
+		t.Error("a navigation (new URL) did not count as loading")
 	}
 }
 
