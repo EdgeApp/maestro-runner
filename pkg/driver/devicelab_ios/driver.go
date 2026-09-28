@@ -57,11 +57,16 @@ type Driver struct {
 
 	// runSimctl runs `xcrun simctl args…`; tests replace it.
 	runSimctl func(args ...string) (string, error)
+
+	// web reads whether the visible web page is still loading (WebKit's
+	// inspector); openWeb connects it, and tests replace it.
+	web     webState
+	openWeb func() (webPages, error)
 }
 
 // NewDriver returns a driver for the agent on a simulator.
 func NewDriver(agent agentAPI, info *core.PlatformInfo, udid string) *Driver {
-	return &Driver{
+	d := &Driver{
 		agent:           agent,
 		info:            info,
 		udid:            udid,
@@ -71,6 +76,8 @@ func NewDriver(agent agentAPI, info *core.PlatformInfo, udid string) *Driver {
 			return simctl(context.Background(), 5*time.Minute, args...)
 		},
 	}
+	d.openWeb = d.openSimulatorInspector
+	return d
 }
 
 // SetAppID names the app under test.
@@ -190,6 +197,12 @@ func (d *Driver) GetState() *core.StateSnapshot {
 // Close releases what the driver holds (staged app copies).
 func (d *Driver) Close() {
 	d.removeStagedApps()
+	d.web.mu.Lock()
+	if d.web.pages != nil {
+		_ = d.web.pages.Close()
+		d.web.pages = nil
+	}
+	d.web.mu.Unlock()
 }
 
 // StartScreenRecording implements core.ScreenRecorder (simulator, host-side).
@@ -359,9 +372,11 @@ func movesScreen(step flow.Step) bool {
 	return false
 }
 
-// settle waits (on the device) for the screen to stop changing. A failure is
-// not an error: the next step polls anyway.
+// settle waits for the visible web page, if any, to finish loading, then
+// (on the device) for the screen to stop changing. A failure is not an
+// error: the next step polls anyway.
 func (d *Driver) settle(timeout time.Duration) {
+	d.waitForWebLoad()
 	_, _ = d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds())})
 }
 
