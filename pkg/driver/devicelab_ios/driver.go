@@ -390,8 +390,8 @@ func movesScreen(step flow.Step) bool {
 // error: the next step polls anyway.
 func (d *Driver) settle(timeout time.Duration) {
 	d.waitForWebLoad()
-	// DL_IOS_QUIESCENCE=1 adds XCTest's app-idle wait (an experiment).
-	_, _ = d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds()), Quiescence: os.Getenv("DL_IOS_QUIESCENCE") == "1"})
+	// DL_IOS_QUIESCENCE=all|main adds XCTest's app-idle wait (an experiment).
+	_, _ = d.call("settle", &Args{TimeoutMs: float64(timeout.Milliseconds()), Quiescence: os.Getenv("DL_IOS_QUIESCENCE")})
 }
 
 func firstNonEmpty(values ...string) string {
