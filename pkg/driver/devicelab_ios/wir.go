@@ -11,6 +11,8 @@ import (
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/google/uuid"
+
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
 // A client for WebKit's Remote Inspector protocol, as webinspectord speaks
@@ -377,9 +379,11 @@ func (s *wirSession) deliver(data []byte) {
 		}
 		if json.Unmarshal(msg.Params, &p) == nil && p.NewTargetID != "" {
 			s.mu.Lock()
+			old := s.targetID
 			s.targetID = p.NewTargetID
 			onSwitch := s.onSwitch
 			s.mu.Unlock()
+			logger.Debug("[devicelab-ios] web page %d %s moved to a new web process (%s → %s)", s.page.ID, s.page.URL, old, p.NewTargetID)
 			if onSwitch != nil {
 				go onSwitch() // never call back from the read loop
 			}
