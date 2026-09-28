@@ -702,3 +702,25 @@ func TestInputTextWithSelectorRetapsItsOwnField(t *testing.T) {
 		t.Errorf("re-tap at y=%v, want the field (100-144), not the button", y)
 	}
 }
+
+func TestTapDoesNotHitAStalePointWhenTheElementLeft(t *testing.T) {
+	// The button appears late (the screen was changing), then is gone once
+	// the screen settles: the tap must not go to where it was.
+	var finds atomic.Int32
+	d, fa, _ := newTestDriver(t, func(cmd string, _ Args) (*Response, error) {
+		if cmd == "find" {
+			if finds.Add(1) == 2 {
+				return tree(node(1, "Button", "run", 46, 232, 42, 20)), nil
+			}
+			return tree(), nil
+		}
+		return ok(nil), nil
+	})
+	res := d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "run"}})
+	if res.Success {
+		t.Error("tapped an element that was gone once the screen settled")
+	}
+	if n := len(fa.sent("act")); n != 0 {
+		t.Errorf("taps = %d, want 0", n)
+	}
+}

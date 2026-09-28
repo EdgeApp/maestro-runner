@@ -80,9 +80,13 @@ func (d *Driver) tapSelector(sel flow.Selector, optional bool, timeoutMs int, ki
 		// aim where the element is now. A button on a page still loading took
 		// the tap and did nothing (DDG's address-bar spoofing tests).
 		d.settle(defaultSettleTimeout)
-		if again, sc2, err := d.findElement(sel, optional, settledRefindMs); err == nil {
-			node, sc = again, sc2
+		again, sc2, err := d.findElement(sel, optional, settledRefindMs)
+		if err != nil {
+			// Gone once the screen settled: tapping where it was would hit
+			// whatever is there now.
+			return notFound(err, optional, "tap")
 		}
+		node, sc = again, sc2
 	}
 	x, y, ok := tapPoint(*node, sc.width, sc.height)
 	if !ok {
