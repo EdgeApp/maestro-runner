@@ -319,36 +319,48 @@ func (in *inspector) Close() error {
 	return in.client.Close()
 }
 
-// webState is the driver's lazily opened inspector; off after it fails once.
+// webState is the driver's inspector, opened in the background on first
+// use: connecting costs about a second, which a native app should not pay
+// on its first settle. Checks start once it is ready; off if it fails.
 type webState struct {
-	mu    sync.Mutex
-	pages webPages
-	tried bool
+	mu      sync.Mutex
+	pages   webPages
+	started bool
+	ready   chan struct{}
 }
 
 var errNoInspector = errors.New("web inspector unavailable")
 
-// webPagesFor opens the inspector on first use. A missing socket or an
-// inspector that refuses turns the check off for the session.
+// webPagesFor returns the inspector once it is open. The first call starts
+// opening it and returns errNoInspector until it is ready; a missing socket
+// or an inspector that refuses turns the check off for the session.
 func (d *Driver) webPagesFor() (webPages, error) {
 	d.web.mu.Lock()
-	defer d.web.mu.Unlock()
-	if d.web.tried {
-		if d.web.pages == nil {
-			return nil, errNoInspector
-		}
-		return d.web.pages, nil
+	if !d.web.started {
+		d.web.started = true
+		d.web.ready = make(chan struct{})
+		open := d.openWeb
+		go func() {
+			var pages webPages
+			var err error = errNoInspector
+			if open != nil {
+				pages, err = open()
+			}
+			d.web.mu.Lock()
+			if err != nil {
+				logger.Debug("[devicelab-ios] web inspector off: %v", err)
+			} else {
+				d.web.pages = pages
+			}
+			d.web.mu.Unlock()
+			close(d.web.ready)
+		}()
 	}
-	d.web.tried = true
-	if d.openWeb == nil {
+	pages := d.web.pages
+	d.web.mu.Unlock()
+	if pages == nil {
 		return nil, errNoInspector
 	}
-	pages, err := d.openWeb()
-	if err != nil {
-		logger.Debug("[devicelab-ios] web inspector off: %v", err)
-		return nil, errNoInspector
-	}
-	d.web.pages = pages
 	return pages, nil
 }
 

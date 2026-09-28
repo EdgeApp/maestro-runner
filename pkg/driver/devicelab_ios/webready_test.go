@@ -37,6 +37,7 @@ func TestSettleWaitsForVisiblePageToLoad(t *testing.T) {
 	fp := &fakePages{loadingFor: 2}
 	d.openWeb = func() (webPages, error) { return fp, nil }
 	d.SetAppID("com.example.browser")
+	openWebNow(t, d)
 	d.settle(defaultSettleTimeout)
 	if got := fp.checks.Load(); got != 3 {
 		t.Errorf("load checks = %d, want 3 (loading, loading, done)", got)
@@ -76,9 +77,42 @@ func TestUnavailableInspectorIsTriedOnce(t *testing.T) {
 		}
 		d.settle(defaultSettleTimeout)
 	}
+	<-d.web.ready
+	d.settle(defaultSettleTimeout)
 	if opened != 1 {
 		t.Errorf("inspector opened %d times, want 1 (off after the first failure)", opened)
 	}
+}
+
+// openWebNow starts the background open and waits for it.
+func openWebNow(t *testing.T, d *Driver) {
+	t.Helper()
+	_, _ = d.webPagesFor()
+	select {
+	case <-d.web.ready:
+	case <-time.After(time.Second):
+		t.Fatal("inspector did not open")
+	}
+}
+
+func TestFirstSettleDoesNotWaitForTheInspector(t *testing.T) {
+	d, _, _ := newTestDriver(t, screenOf())
+	release := make(chan struct{})
+	d.openWeb = func() (webPages, error) { <-release; return &fakePages{}, nil }
+	d.SetAppID("com.example.app")
+	start := time.Now()
+	if d.waitForWebLoad() {
+		t.Error("waited on a page before the inspector was open")
+	}
+	if time.Since(start) > 200*time.Millisecond {
+		t.Errorf("first check blocked %v on the inspector opening", time.Since(start))
+	}
+	close(release)
+	<-d.web.ready
+	if _, err := d.webPagesFor(); err != nil {
+		t.Errorf("inspector not usable once open: %v", err)
+	}
+	d.Close()
 }
 
 func TestOpenSimulatorInspectorNeedsSocket(t *testing.T) {

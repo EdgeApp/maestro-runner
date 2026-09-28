@@ -198,6 +198,15 @@ func (d *Driver) GetState() *core.StateSnapshot {
 func (d *Driver) Close() {
 	d.removeStagedApps()
 	d.web.mu.Lock()
+	ready := d.web.ready
+	d.web.mu.Unlock()
+	if ready != nil {
+		select { // an open still in progress would leak its connection
+		case <-ready:
+		case <-time.After(2 * webCallTimeout):
+		}
+	}
+	d.web.mu.Lock()
 	if d.web.pages != nil {
 		_ = d.web.pages.Close()
 		d.web.pages = nil
