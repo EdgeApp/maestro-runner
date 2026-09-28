@@ -34,6 +34,9 @@ const (
 	youngPage = 5 * time.Second
 	// pageRetry is how long a page whose check failed is left alone.
 	pageRetry = 5 * time.Second
+	// sessionOpenTimeout bounds opening a page's session, which includes
+	// waiting up to targetWait for its target.
+	sessionOpenTimeout = 3 * time.Second
 )
 
 // webPages tells whether an app's visible web page is still loading.
@@ -221,12 +224,16 @@ func (in *inspector) pageState(ctx context.Context, page wirPage) (string, *page
 	if timeout <= 0 {
 		timeout = webEvalTimeout
 	}
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	pc, err := in.conn(cctx, page)
+	// Opening a session (setup, target, network) has its own budget: tied
+	// to the check's, a page without targets could never finish opening.
+	octx, ocancel := context.WithTimeout(ctx, sessionOpenTimeout)
+	pc, err := in.conn(octx, page)
+	ocancel()
 	if err != nil {
 		return "", nil, err
 	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	raw, err := pc.evaluate(cctx, pageStateJS)
 	if err != nil {
 		// A page that is only slow (a throttled hidden tab) keeps its

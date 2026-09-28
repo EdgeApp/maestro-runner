@@ -41,6 +41,8 @@ type cdpReply struct {
 var errPageClosed = errors.New("page connection closed")
 
 // openPage opens an inspector session on page and turns on network tracking.
+// A session whose network tracking did not turn on is not kept: it would
+// read as idle through every load.
 func openPage(ctx context.Context, client *wirClient, page wirPage) (*pageConn, error) {
 	pc := &pageConn{inflight: map[string]time.Time{}}
 	sess, err := client.openSession(ctx, page, func(method string, params json.RawMessage) {
@@ -50,10 +52,33 @@ func openPage(ctx context.Context, client *wirClient, page wirPage) (*pageConn, 
 		return nil, err
 	}
 	pc.sess = sess
-	// Network tracking is a second signal; a page that refuses it still
-	// answers readyState.
-	_, _ = sess.call(ctx, "Network.enable", nil)
+	if err := pc.enableNetwork(); err != nil {
+		sess.close()
+		return nil, err
+	}
+	sess.mu.Lock()
+	sess.onSwitch = func() {
+		pc.resetNetwork()
+		_ = pc.enableNetwork() // on failure the next check's error drops the page
+	}
+	sess.mu.Unlock()
 	return pc, nil
+}
+
+// enableNetwork turns on request events for the page's current target, on
+// its own budget: a slow session setup must not leave tracking off.
+func (pc *pageConn) enableNetwork() error {
+	ctx, cancel := context.WithTimeout(context.Background(), webCallTimeout)
+	defer cancel()
+	_, err := pc.sess.call(ctx, "Network.enable", nil)
+	return err
+}
+
+// resetNetwork forgets requests of a web process that was swapped out.
+func (pc *pageConn) resetNetwork() {
+	pc.mu.Lock()
+	pc.inflight = map[string]time.Time{}
+	pc.mu.Unlock()
 }
 
 // onEvent tracks request lifecycles.

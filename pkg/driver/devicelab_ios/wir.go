@@ -275,6 +275,9 @@ type wirSession struct {
 	page    wirPage
 	id      string
 	onEvent func(method string, params json.RawMessage)
+	// onSwitch runs (in its own goroutine) when the page moved to a new
+	// target: a cross-site navigation swaps the web process.
+	onSwitch func()
 
 	mu       sync.Mutex
 	targetID string
@@ -323,6 +326,9 @@ func (c *wirClient) openSession(ctx context.Context, page wirPage, onEvent func(
 	select {
 	case <-s.target:
 	case <-s.closed:
+		c.mu.Lock()
+		delete(c.sessions, s.id)
+		c.mu.Unlock()
 		return nil, s.err
 	case <-wait.Done():
 		if ctx.Err() != nil {
@@ -359,7 +365,37 @@ func (s *wirSession) deliver(data []byte) {
 				s.targetID = p.TargetInfo.TargetID
 				close(s.target)
 			}
+			// A later target is provisional until committed.
 			s.mu.Unlock()
+		}
+		return
+	case "Target.didCommitProvisionalTarget":
+		// A cross-site navigation swapped the page's web process: talk to
+		// the new target, and turn its network tracking on.
+		var p struct {
+			NewTargetID string `json:"newTargetId"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.NewTargetID != "" {
+			s.mu.Lock()
+			s.targetID = p.NewTargetID
+			onSwitch := s.onSwitch
+			s.mu.Unlock()
+			if onSwitch != nil {
+				go onSwitch() // never call back from the read loop
+			}
+		}
+		return
+	case "Target.targetDestroyed":
+		var p struct {
+			TargetID string `json:"targetId"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			s.mu.Lock()
+			current := p.TargetID == s.targetID
+			s.mu.Unlock()
+			if current {
+				s.fail(errPageClosed)
+			}
 		}
 		return
 	case "Target.dispatchMessageFromTarget":

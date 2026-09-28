@@ -26,7 +26,10 @@ type fakeWIRD struct {
 	pages    map[int]string // page id → URL
 	states   map[int]string // page id → readyState, "hidden" or "silent"
 	targets  bool
-	sessions map[string]int // session id → page id
+	sessions map[string]int    // session id → page id
+	targetOf map[string]string // session id → current target
+	asked    map[int]int       // page id → Runtime.evaluate count
+	netOn    map[string]bool   // target id → Network.enable received
 	writeMu  sync.Mutex
 }
 
@@ -36,7 +39,8 @@ func newFakeWIRD(t *testing.T, pages map[int]string, states map[int]string, targ
 	f := &fakeWIRD{
 		t: t, codec: ios.NewPlistCodecReadWriter(server, server), conn: server,
 		appID: "PID:42", bundle: "com.example.browser", pages: pages, states: states,
-		targets: targets, sessions: map[string]int{},
+		targets: targets, sessions: map[string]int{}, targetOf: map[string]string{},
+		asked: map[int]int{}, netOn: map[string]bool{},
 	}
 	go f.serve()
 	t.Cleanup(func() { _ = server.Close() })
@@ -72,8 +76,11 @@ func (f *fakeWIRD) setPages(pages map[int]string) {
 func (f *fakeWIRD) toSession(session string, msg map[string]any) {
 	raw, _ := json.Marshal(msg)
 	if f.targets {
+		f.mu.Lock()
+		target := f.targetOf[session]
+		f.mu.Unlock()
 		wrapped, _ := json.Marshal(map[string]any{"method": "Target.dispatchMessageFromTarget",
-			"params": map[string]any{"targetId": "page-" + session, "message": string(raw)}})
+			"params": map[string]any{"targetId": target, "message": string(raw)}})
 		raw = wrapped
 	}
 	f.write("_rpc_applicationSentData:", map[string]any{"WIRApplicationIdentifierKey": f.appID,
@@ -106,6 +113,7 @@ func (f *fakeWIRD) serve() {
 			page, _ := plistInt(arg["WIRPageIdentifierKey"])
 			f.mu.Lock()
 			f.sessions[session] = page
+			f.targetOf[session] = "page-" + session
 			f.mu.Unlock()
 			if f.targets {
 				raw, _ := json.Marshal(map[string]any{"method": "Target.targetCreated",
@@ -139,16 +147,40 @@ func (f *fakeWIRD) answer(arg map[string]any) {
 			return
 		}
 		var p struct {
-			Message string `json:"message"`
+			TargetID string `json:"targetId"`
+			Message  string `json:"message"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
 		_ = json.Unmarshal([]byte(p.Message), &msg)
+		f.mu.Lock()
+		current := f.targetOf[session]
+		f.mu.Unlock()
+		if p.TargetID != current {
+			// A command to a swapped-out target: WebKit answers with an error.
+			nack, _ := json.Marshal(map[string]any{"id": msg.ID + 1, "error": map[string]any{"message": "target not found"}})
+			f.write("_rpc_applicationSentData:", map[string]any{"WIRApplicationIdentifierKey": f.appID,
+				"WIRDestinationKey": session, "WIRMessageDataKey": nack})
+			return
+		}
 		if state == "silent" && msg.Method == "Runtime.evaluate" {
 			return // a silent page acknowledges nothing
 		}
 		ack, _ := json.Marshal(map[string]any{"id": msg.ID + 1, "result": map[string]any{}})
 		f.write("_rpc_applicationSentData:", map[string]any{"WIRApplicationIdentifierKey": f.appID,
 			"WIRDestinationKey": session, "WIRMessageDataKey": ack})
+		if msg.Method == "Network.enable" {
+			f.mu.Lock()
+			f.netOn[current] = true
+			f.mu.Unlock()
+		}
+	}
+	if msg.Method == "Runtime.evaluate" {
+		f.mu.Lock()
+		f.asked[f.sessions[session]]++
+		f.mu.Unlock()
+	}
+	if state == "nonet" && msg.Method == "Network.enable" {
+		return // a page that never acknowledges network tracking
 	}
 	switch msg.Method {
 	case "Runtime.evaluate":
@@ -159,6 +191,35 @@ func (f *fakeWIRD) answer(arg map[string]any) {
 	default:
 		f.toSession(session, map[string]any{"id": msg.ID, "result": map[string]any{}})
 	}
+}
+
+// swap moves a session's page to a new target, as a cross-site navigation
+// swaps the web process: a provisional target is created, then committed.
+func (f *fakeWIRD) swap(session string) string {
+	f.mu.Lock()
+	old := f.targetOf[session]
+	next := "swap-" + old
+	f.mu.Unlock()
+	send := func(msg map[string]any) {
+		raw, _ := json.Marshal(msg)
+		f.write("_rpc_applicationSentData:", map[string]any{"WIRApplicationIdentifierKey": f.appID,
+			"WIRDestinationKey": session, "WIRMessageDataKey": raw})
+	}
+	send(map[string]any{"method": "Target.targetCreated",
+		"params": map[string]any{"targetInfo": map[string]any{"targetId": next, "type": "page", "isProvisional": true}}})
+	f.mu.Lock()
+	f.targetOf[session] = next
+	f.mu.Unlock()
+	send(map[string]any{"method": "Target.didCommitProvisionalTarget",
+		"params": map[string]any{"oldTargetId": old, "newTargetId": next}})
+	send(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": old}})
+	return next
+}
+
+func (f *fakeWIRD) askedCount(page int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.asked[page]
 }
 
 // setState changes what a page answers.
@@ -206,6 +267,7 @@ func TestLoadingReadsTheVisiblePageThroughItsTarget(t *testing.T) {
 	for _, targets := range []bool{true, false} {
 		states := map[int]string{2: "hidden", 3: "loading"}
 		f, in := startInspector(t, map[int]string{2: "https://tab1.example", 3: "https://tab2.example"}, states, targets)
+		in.evalTimeout = webEvalTimeout // realistic: session setup must fit beside it
 		loading, err := in.Loading(context.Background(), "com.example.browser")
 		if err != nil || !loading {
 			t.Errorf("targets=%v: visible page loading: loading=%v err=%v, want true", targets, loading, err)
@@ -213,6 +275,9 @@ func TestLoadingReadsTheVisiblePageThroughItsTarget(t *testing.T) {
 		f.setState(3, "complete")
 		if loading, _ := in.Loading(context.Background(), "com.example.browser"); loading {
 			t.Errorf("targets=%v: a complete visible page and a hidden one read as loading", targets)
+		}
+		if n := f.askedCount(3); n != 2 {
+			t.Errorf("targets=%v: visible page asked %d times, want 2 (a real answer each check)", targets, n)
 		}
 	}
 }
@@ -419,5 +484,73 @@ func TestRelaunchedAppDoesNotReuseTheOldPage(t *testing.T) {
 	old.sess.mu.Unlock()
 	if !closed {
 		t.Error("the old process's session was not closed")
+	}
+}
+
+func TestCrossSiteNavigationFollowsTheNewTarget(t *testing.T) {
+	f, in := startInspector(t, map[int]string{2: "https://a.example"}, map[int]string{2: "complete"}, true)
+	if _, err := in.Loading(context.Background(), "com.example.browser"); err != nil {
+		t.Fatal(err)
+	}
+	next := f.swap(f.sessionFor(2))
+	time.Sleep(100 * time.Millisecond)
+	// Commands must now reach the new target (the old one answers errors).
+	state, _, err := in.pageState(context.Background(), wirPage{AppID: "PID:42", ID: 2, Type: wirTypeWebPage})
+	if err != nil || state != "complete" {
+		t.Fatalf("after the swap: state=%q err=%v", state, err)
+	}
+	f.mu.Lock()
+	on := f.netOn[next]
+	f.mu.Unlock()
+	if !on {
+		t.Error("network tracking was not turned on for the new target")
+	}
+	// The new process's requests count.
+	f.toSession(f.sessionFor(2), map[string]any{"method": "Network.requestWillBeSent",
+		"params": map[string]any{"requestId": "n1", "type": "Document", "request": map[string]any{"url": "https://b.example/"}}})
+	time.Sleep(50 * time.Millisecond)
+	if loading, _ := in.Loading(context.Background(), "com.example.browser"); !loading {
+		t.Error("a request on the new target did not read as loading")
+	}
+}
+
+func TestDestroyedTargetFailsTheSession(t *testing.T) {
+	f, client := newFakeWIRD(t, map[int]string{2: "https://a.example"}, map[int]string{2: "complete"}, true)
+	if err := client.start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s, err := client.openSession(context.Background(), wirPage{AppID: "PID:42", ID: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	target := f.targetOf[s.id]
+	f.mu.Unlock()
+	raw, _ := json.Marshal(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": target}})
+	f.write("_rpc_applicationSentData:", map[string]any{"WIRApplicationIdentifierKey": "PID:42",
+		"WIRDestinationKey": s.id, "WIRMessageDataKey": raw})
+	select {
+	case <-s.closed:
+	case <-time.After(time.Second):
+		t.Error("the session did not fail when its target was destroyed")
+	}
+}
+
+func TestSessionNotKeptWhenNetworkDoesNotTurnOn(t *testing.T) {
+	// A page that never acknowledges Network.enable: the session is closed,
+	// not cached with tracking silently off.
+	_, client := newFakeWIRD(t, map[int]string{2: "https://a.example"}, map[int]string{2: "nonet"}, false)
+	if err := client.start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, err := openPage(context.Background(), client, wirPage{AppID: "PID:42", ID: 2})
+	if err == nil {
+		t.Fatal("a page whose network tracking never turned on was kept")
+	}
+	client.mu.Lock()
+	n := len(client.sessions)
+	client.mu.Unlock()
+	if n != 0 {
+		t.Errorf("sessions left open = %d, want 0", n)
 	}
 }
