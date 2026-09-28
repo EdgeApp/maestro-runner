@@ -74,6 +74,16 @@ func (d *Driver) tapSelector(sel flow.Selector, optional bool, timeoutMs int, ki
 	if err != nil {
 		return notFound(err, optional, "tap")
 	}
+	if d.foundLate {
+		// The element appeared while we polled, so the screen was still
+		// changing. Maestro settles right before every tap: do the same, then
+		// aim where the element is now. A button on a page still loading took
+		// the tap and did nothing (DDG's address-bar spoofing tests).
+		d.settle(defaultSettleTimeout)
+		if again, sc2, err := d.findElement(sel, optional, settledRefindMs); err == nil {
+			node, sc = again, sc2
+		}
+	}
 	x, y, ok := tapPoint(*node, sc.width, sc.height)
 	if !ok {
 		err := fmt.Errorf("%s is not on screen", describe(sel))
@@ -97,6 +107,9 @@ func (d *Driver) tapSelector(sel flow.Selector, optional bool, timeoutMs int, ki
 	}
 	return core.SuccessResult(fmt.Sprintf("%s on %s", kind, describe(sel)), toElementInfo(node))
 }
+
+// settledRefindMs bounds the second lookup after a late find's settle.
+const settledRefindMs = 1000
 
 // tapAt is a point a step tapped.
 type tapAt struct{ x, y float64 }

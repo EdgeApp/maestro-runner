@@ -625,3 +625,47 @@ func TestScrollUsesMaestroDefaultDuration(t *testing.T) {
 		t.Errorf("scroll gesture lasts %vms, want Maestro's 601", got)
 	}
 }
+
+func TestTapSettlesWhenElementAppearsLate(t *testing.T) {
+	// The button shows up on the second lookup (a page still loading): the
+	// tap waits for a settle and aims where the button is after it.
+	var finds atomic.Int32
+	d, fa, _ := newTestDriver(t, func(cmd string, _ Args) (*Response, error) {
+		if cmd == "find" {
+			switch finds.Add(1) {
+			case 1:
+				return tree(), nil
+			case 2:
+				return tree(node(1, "Button", "run", 46, 232, 42, 20)), nil
+			default:
+				return tree(node(1, "Button", "run", 46, 300, 42, 20)), nil
+			}
+		}
+		return ok(nil), nil
+	})
+	if res := d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "run"}}); !res.Success {
+		t.Fatal(res.Message)
+	}
+	var order []string
+	for _, c := range fa.calls {
+		if c.cmd == "find" || c.cmd == "settle" || c.cmd == "act" {
+			order = append(order, c.cmd)
+		}
+	}
+	if got := strings.Join(order, ","); got != "find,find,settle,find,act" {
+		t.Fatalf("calls = %s, want find,find,settle,find,act", got)
+	}
+	if acts := fa.sent("act"); *acts[0].Y != 310 {
+		t.Errorf("tapped y=%v, want 310 (where the button is after the settle)", *acts[0].Y)
+	}
+}
+
+func TestTapOnFirstLookupDoesNotSettleAgain(t *testing.T) {
+	d, fa, _ := newTestDriver(t, screenOf(node(1, "Button", "run", 46, 232, 42, 20)))
+	if res := d.Execute(&flow.TapOnStep{Selector: flow.Selector{Text: "run"}}); !res.Success {
+		t.Fatal(res.Message)
+	}
+	if n := len(fa.sent("settle")); n != 0 {
+		t.Errorf("settles = %d, want 0 for an element found at once", n)
+	}
+}

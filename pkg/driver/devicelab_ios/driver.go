@@ -46,6 +46,10 @@ type Driver struct {
 	// lastTap is where this step tapped; prevTap is where the step before
 	// it did, so inputText can re-tap a field whose focus did not take.
 	lastTap, prevTap *tapAt
+	// foundLate is set when the last findElement needed more than one
+	// lookup: the element appeared while we polled, so the screen was still
+	// changing (a web page still loading).
+	foundLate bool
 
 	mu         sync.Mutex
 	stagedApps map[string]stagedApp

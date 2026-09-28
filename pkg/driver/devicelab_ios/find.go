@@ -76,6 +76,7 @@ func (d *Driver) findElement(sel flow.Selector, optional bool, timeoutMs int) (*
 			if node, merr := pick(sc, sel); merr == nil {
 				logger.Debug("[devicelab-ios] found %s → %s %q vis=%.2f bounds %v (attempt %d)", describe(sel),
 					node.Type, firstNonEmpty(node.Label, node.Value, node.Placeholder, node.ID), node.Vis, bounds(*node), attempt)
+				d.foundLate = attempt > 0
 				return node, sc, nil
 			} else {
 				lastErr = merr
