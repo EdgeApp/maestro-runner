@@ -1,5 +1,9 @@
 # devicelab-ios-agent (prebuilt)
 
+> The agent builds in `simulator/` and `device/` are proprietary binaries, free to use with
+> maestro-runner but not open source: see [../../LICENSE-BINARIES.md](../../LICENSE-BINARIES.md).
+> `signing-stub/` is source under the Apache License 2.0.
+
 The XCUITest agent behind `--driver devicelab` on iOS simulators and real iPhones, built from
 the private `devicelab-ios-agent` repository with `scripts/build.sh`
 (universal arm64 + x86_64, Swift Testing interop libraries bundled).

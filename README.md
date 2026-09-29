@@ -185,5 +185,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+maestro-runner is licensed under the Apache License 2.0 — see [LICENSE](LICENSE).
+
+### DeviceLab driver binaries
+
+The prebuilt on-device agents behind `--driver devicelab` (the Android agent APKs and the iOS agent in
+`drivers/ios/devicelab-ios-agent/`) are free to use with maestro-runner, including commercially, but they
+are not open source. You may redistribute them unmodified as part of maestro-runner (forks, Docker images,
+CI caches); you may not modify them, ship them separately, or reverse-engineer them, except as permitted by
+applicable law. See [drivers/LICENSE-BINARIES.md](drivers/LICENSE-BINARIES.md) for the full terms.
+Everything else in this repository, including the other drivers, keeps its open-source license.
 
