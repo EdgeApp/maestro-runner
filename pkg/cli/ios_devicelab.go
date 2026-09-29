@@ -13,7 +13,8 @@ import (
 // createDevicelabIOSDriver constructs the iOS driver for --driver devicelab:
 // the prebuilt devicelab-ios-agent (drivers/ios/devicelab-ios-agent/) on a
 // booted simulator. The agent stays up between runs; a later run re-attaches
-// to it instead of starting it again.
+// to it instead of starting it again. A physical iPhone goes to
+// createDevicelabIOSDeviceDriver.
 func createDevicelabIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	udid := getFirstDevice(cfg)
 	if udid == "" {
@@ -21,12 +22,17 @@ func createDevicelabIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		var err error
 		udid, err = findBootedSimulator()
 		if err != nil || udid == "" {
-			return nil, nil, fmt.Errorf("--driver devicelab on iOS needs a booted simulator (real devices: use --driver wda)")
+			// No simulator booted: a connected iPhone, as the WDA path does.
+			if dev, derr := findConnectedDevice(); derr == nil && dev != "" {
+				printSetupSuccess(fmt.Sprintf("Found device: %s", dev))
+				return createDevicelabIOSDeviceDriver(cfg, dev)
+			}
+			return nil, nil, fmt.Errorf("--driver devicelab on iOS needs a booted simulator or a connected iPhone")
 		}
 		printSetupSuccess(fmt.Sprintf("Found simulator: %s", udid))
 	}
 	if !isIOSSimulator(udid) {
-		return nil, nil, fmt.Errorf("--driver devicelab on iOS supports simulators only; %s looks like a physical device (use --driver wda)", udid)
+		return createDevicelabIOSDeviceDriver(cfg, udid)
 	}
 
 	if cfg.AppFile != "" && !cfg.NoAppInstall {
