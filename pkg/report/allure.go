@@ -286,6 +286,9 @@ func collectAttachmentsRecursive(commands []Command, attachments *[]AllureAttach
 
 // allureAttachmentName keeps attachments flat without collisions between flows
 // that use the same screenshot filename. Use the same name in JSON and on disk.
+// The files in allure-results/ are hash-named on purpose: every flow names its
+// screenshots cmd-000-before.png and so on, and Allure shows each attachment's
+// Name ("Before", "After", "Screenshot"), not its file name.
 func allureAttachmentName(source string) string {
 	digest := sha256.Sum256([]byte(filepath.ToSlash(filepath.Clean(source))))
 	return fmt.Sprintf("%x-attachment%s", digest, filepath.Ext(source))

@@ -433,6 +433,9 @@ func TestAllureScreenshotAttachments(t *testing.T) {
 		}
 		checkAttachment := func(attachment AllureAttachment, filename string) {
 			t.Helper()
+			if attachment.Type != "image/png" {
+				t.Errorf("attachment %s type = %q, want image/png", attachment.Source, attachment.Type)
+			}
 			content, err := os.ReadFile(filepath.Join(allureDir, attachment.Source))
 			if err != nil {
 				t.Errorf("attachment %s: %v", attachment.Source, err)
@@ -455,6 +458,20 @@ func TestAllureScreenshotAttachments(t *testing.T) {
 		checkAttachment(step.Attachments[0], "before.png")
 		checkAttachment(step.Attachments[1], "after.png")
 		checkAttachment(step.Steps[0].Attachments[0], "nested.png")
+		// Allure shows these names, not the hashed file names.
+		for i, want := range []string{"Before", "After"} {
+			if got := step.Attachments[i].Name; got != want {
+				t.Errorf("step attachment %d name = %q, want %q", i, got, want)
+			}
+		}
+		if got := step.Steps[0].Attachments[0].Name; got != "After" {
+			t.Errorf("nested step attachment name = %q, want After", got)
+		}
+		for i, a := range result.Attachments {
+			if a.Name != "Screenshot" {
+				t.Errorf("flow attachment %d name = %q, want Screenshot", i, a.Name)
+			}
+		}
 	}
 }
 
