@@ -163,6 +163,9 @@ type Driver struct {
 	// native finding meanwhile.
 	lastWebViewConnectFail   time.Time
 	lastWebViewConnectFailSk string
+	// Consecutive connect failures on lastWebViewConnectFailSk; the backoff
+	// grows with it (webViewRepeatBackoff).
+	lastWebViewConnectFails int
 
 	// Lazy retry state: each successful tap captures the pre-tap tree hash
 	// + selector + time. If the NEXT element-based command can't find its
@@ -733,6 +736,7 @@ func (d *Driver) ensureWebViewConnection() {
 		d.knownCDPType = ""                    // Clear browser mode when CDP goes away
 		d.lastWebViewConnectFail = time.Time{} // reset backoff — socket is gone
 		d.lastWebViewConnectFailSk = ""
+		d.lastWebViewConnectFails = 0
 		return
 	}
 
@@ -758,9 +762,17 @@ func (d *Driver) ensureWebViewConnection() {
 		if inWebViewConnectBackoff(cdpInfo.Socket, d.lastWebViewConnectFailSk, d.lastWebViewConnectFail, time.Now()) {
 			return
 		}
+		if cdpInfo.Socket == d.lastWebViewConnectFailSk &&
+			time.Since(d.lastWebViewConnectFail) < webViewRepeatBackoff(d.lastWebViewConnectFails) {
+			return
+		}
 		logger.Info("[cdp:3-connection] CDP socket available, initiating connection to %s (type=%s)", cdpInfo.Socket, cdpType)
 		if err := d.webView.connect(cdpInfo, cdpType); err != nil {
 			logger.Info("[cdp:3-connection] connect failed: %v (socket=%s)", err, cdpInfo.Socket)
+			if cdpInfo.Socket != d.lastWebViewConnectFailSk {
+				d.lastWebViewConnectFails = 0
+			}
+			d.lastWebViewConnectFails++
 			d.lastWebViewConnectFail = time.Now()
 			d.lastWebViewConnectFailSk = cdpInfo.Socket
 			return
@@ -768,6 +780,7 @@ func (d *Driver) ensureWebViewConnection() {
 		// Connected — clear any backoff state.
 		d.lastWebViewConnectFail = time.Time{}
 		d.lastWebViewConnectFailSk = ""
+		d.lastWebViewConnectFails = 0
 	}
 }
 
@@ -776,6 +789,26 @@ func (d *Driver) ensureWebViewConnection() {
 // so a stalled/unreachable devtools endpoint can't add the full connect
 // timeout to every command (mirrors Maestro's MA-4119 bound).
 const webViewConnectBackoff = 5 * time.Second
+
+// webViewRepeatBackoff is the wait after `failures` consecutive failed
+// connects to the same socket: webViewConnectBackoff, doubling per failure,
+// capped at a minute. A socket that keeps failing (RNTester leaves a
+// devtools socket with no pages; each attempt timed out after 10s) otherwise
+// took most of every scrollUntilVisible round, and the step ran out of time
+// with its element on screen.
+func webViewRepeatBackoff(failures int) time.Duration {
+	if failures <= 1 {
+		return webViewConnectBackoff
+	}
+	wait := webViewConnectBackoff
+	for i := 1; i < failures && wait < time.Minute; i++ {
+		wait *= 2
+	}
+	if wait > time.Minute {
+		wait = time.Minute
+	}
+	return wait
+}
 
 // inWebViewConnectBackoff reports whether a connect to socket should be skipped
 // because the same socket failed to connect within webViewConnectBackoff of now.

@@ -3509,3 +3509,22 @@ func TestLooksLikeFileName(t *testing.T) {
 		}
 	}
 }
+
+func TestWebViewRepeatBackoffGrowsAndCaps(t *testing.T) {
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{0, webViewConnectBackoff},
+		{1, webViewConnectBackoff},
+		{2, 2 * webViewConnectBackoff},
+		{3, 4 * webViewConnectBackoff},
+		{4, 8 * webViewConnectBackoff},
+		{10, time.Minute},
+	}
+	for _, c := range cases {
+		if got := webViewRepeatBackoff(c.failures); got != c.want {
+			t.Errorf("webViewRepeatBackoff(%d) = %v, want %v", c.failures, got, c.want)
+		}
+	}
+}
