@@ -1,12 +1,12 @@
 {
-  "version": "beb36f1",
+  "version": "d95b504",
   "protocol": "1.0",
   "xcode": "Xcode 27.0",
   "runnerBundleId": "dev.devicelab.agent.uitests.xctrunner",
   "hostBundleId": "dev.devicelab.agent",
   "files": {
     "agent.xctestrun": "45b704ea6a432fef69461223a1de91e381743cb9413e082db7f2966283beea75",
-    "DevicelabIOSAgent.app/DevicelabIOSAgent": "040b94835daf0ed54fb2552480c6b5cd8aa95c61120397d133e575bac5476236",
+    "DevicelabIOSAgent.app/DevicelabIOSAgent": "9ac2e2329192f55f682aba556241cd1e3fd172aaca67a84aee01f643db1134ec",
     "DevicelabIOSAgent.app/Info.plist": "fb24623578ba259bba1a48d0bb75e44903ff5117c6525a8adc0a01ec29d8f380",
     "DevicelabIOSAgent.app/PkgInfo": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0",
     "DevicelabIOSAgentUITests-Runner.app/DevicelabIOSAgentUITests-Runner": "d776d95c3da519cf802b9e58794802128cd158160db68471c703005522b37337",
@@ -156,7 +156,11 @@
     "DevicelabIOSAgentUITests-Runner.app/Frameworks/XCUnit.framework/XCUnit": "ca2ce84e479758c3f2ab3c95964de49938d917b3ed3fa3d98038a6c4ef5ddc33",
     "DevicelabIOSAgentUITests-Runner.app/Info.plist": "db45280229a22ebbda188c44e0b97d8ba049d65c2373a1b11b4c5b61525014a0",
     "DevicelabIOSAgentUITests-Runner.app/PkgInfo": "82502191c9484b04d685374f9879a0066069c49b8acae7a04b01d38d07e8eca0",
-    "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest/DevicelabIOSAgentUITests": "6c9dde684e6c29e0b01dd3767eaf0be3a5eeff9e15ac04db27e84244d1d687a8",
+    "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest.dSYM/Contents/Info.plist": "1da6845bdb07cb74e42e10789ad8cfaa507a407eb872b5eafd5d00e8af3b4194",
+    "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest.dSYM/Contents/Resources/DWARF/DevicelabIOSAgentUITests": "2277f0582c59eab33dec63ff3ee767aeb365b92ba21e8601cc6424c9dc3b5086",
+    "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest.dSYM/Contents/Resources/Relocations/aarch64/DevicelabIOSAgentUITests.yml": "4f8d56dc9fe00cd8770aa3990b53afafaf2dae3c35c4dbd3c5c910c665298925",
+    "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest.dSYM/Contents/Resources/Relocations/x86_64/DevicelabIOSAgentUITests.yml": "160c494ebd667c00b2d45048c93051c6473219de5ef82d6c3073cb1ba32bfcd6",
+    "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest/DevicelabIOSAgentUITests": "cf64ea153dca77bd2118a80bf469fab13ec270566f43f82576cad3aaeb3e0172",
     "DevicelabIOSAgentUITests-Runner.app/PlugIns/DevicelabIOSAgentUITests.xctest/Info.plist": "aebd82b9757c778b79a8bcab2da2bece3caf49d4319c0284591d06e9a09ea253"
   }
 }
