@@ -49,7 +49,7 @@ THIRD_PARTY_LICENSES
 # Local-only files
 BUILD_INSTRUCTIONS.md
 testdata/
-scripts/
+/scripts/
 docs_local/
 research/
 examples/
