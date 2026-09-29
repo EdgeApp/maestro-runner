@@ -1,0 +1,51 @@
+name: devicelab iOS on Xcode 26 hosts
+
+# Checks that --driver devicelab (prebuilt agent built with Xcode 27) starts and
+# drives a simulator on hosts still on Xcode 26, using the built-in Settings app.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/xcode26-devicelab]
+
+jobs:
+  settings:
+    strategy:
+      fail-fast: false
+      matrix:
+        xcode: ["26.6", "26.3"]
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Select Xcode ${{ matrix.xcode }}
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${{ matrix.xcode }}.app"
+          xcodebuild -version
+          xcrun simctl list runtimes
+      - name: Build maestro-runner
+        run: go build -o maestro-runner .
+      - name: Boot a fresh iPhone simulator
+        id: sim
+        run: |
+          RT=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x["platform"]=="iOS" and x["isAvailable"]]; print(r[-1]["identifier"])')
+          DT=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; d=[x["identifier"] for x in json.load(sys.stdin)["devicetypes"] if "iPhone" in x["name"] and "Pro" in x["name"] and "Max" not in x["name"]]; print(d[-1])')
+          echo "runtime=$RT devicetype=$DT"
+          UDID=$(xcrun simctl create "ci iPhone" "$DT" "$RT")
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: Run Settings flows with --driver devicelab
+        env:
+          MAESTRO_RUNNER_HOME: ${{ github.workspace }}
+        run: |
+          ./maestro-runner --platform ios --driver devicelab --device "${{ steps.sim.outputs.udid }}" \
+            test --output out --flatten e2e/ios-settings/
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devicelab-ios-xcode-${{ matrix.xcode }}
+          path: out/

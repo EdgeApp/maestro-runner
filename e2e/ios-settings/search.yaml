@@ -1,0 +1,10 @@
+appId: com.apple.Preferences
+---
+- launchApp:
+    stopApp: true
+- scroll
+- scroll:
+    direction: UP
+- assertVisible: "General"
+- tapOn: "General"
+- assertVisible: "About"
