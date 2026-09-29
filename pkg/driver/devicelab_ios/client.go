@@ -164,6 +164,11 @@ func logCall(cmd string, elapsed time.Duration, resp *Response, reqBytes, respBy
 				parts = append(parts, fmt.Sprintf("%s=%.0f", k, v))
 			}
 		}
+		// Which app the agent read: a capture of SpringBoard while the app
+		// under test is on screen shows here first.
+		if resp.Data != nil && resp.Data.BundleID != "" {
+			parts = append(parts, "app="+resp.Data.BundleID)
+		}
 		phases = strings.Join(parts, " ")
 	}
 	status := "ok"
