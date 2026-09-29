@@ -140,35 +140,8 @@ func TestRemainingTimeoutMs(t *testing.T) {
 	}
 }
 
-// A check between a tap and the next action does not cancel the settle: DDG
-// privacy 9 tapped Refresh, asserted a button the old page still showed, and
-// tapped it mid-reload.
-func TestSettleAfterTapSurvivesChecks(t *testing.T) {
-	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
-	d := New(client, &core.PlatformInfo{}, &mockShell{})
-	back := &flow.PressKeyStep{BaseStep: flow.BaseStep{StepType: flow.StepPressKey}, Key: "back"}
-
-	d.lastStepWasTap = true
-	d.lastTapAt = time.Now()
-	d.Execute(&flow.AssertVisibleStep{BaseStep: flow.BaseStep{TimeoutMs: 1}, Selector: flow.Selector{ID: "pay-button"}})
-	if client.settles != 0 {
-		t.Fatalf("a check settled %d times; checks poll instead", client.settles)
-	}
-	if !d.lastStepWasTap {
-		t.Fatal("a check cancelled the pending settle")
-	}
-	d.Execute(back)
-	if client.settles != 1 {
-		t.Fatalf("action after tap + check settled %d times, want 1", client.settles)
-	}
-	d.Execute(back)
-	if client.settles != 1 {
-		t.Fatalf("the settle was not used up by the first action: %d", client.settles)
-	}
-}
-
 // After a launch, visibility polls are spaced while the app starts, then return
-// to the normal gap; DL_ANDROID_COLDSTART_POLL=off keeps the normal gap.
+// to the normal gap; it is off unless DL_ANDROID_COLDSTART_POLL=on.
 func TestPollGapSpacedDuringColdStart(t *testing.T) {
 	d := &Driver{}
 	if got := d.pollGap(); got != snapshotPollGap {
@@ -182,22 +155,12 @@ func TestPollGapSpacedDuringColdStart(t *testing.T) {
 	if got := d.pollGap(); got != snapshotPollGap {
 		t.Fatalf("after the window pollGap = %v, want %v", got, snapshotPollGap)
 	}
-	t.Setenv("DL_ANDROID_COLDSTART_POLL", "off")
+	t.Setenv("DL_ANDROID_COLDSTART_POLL", "")
 	if coldStartPollEnabled() {
-		t.Fatal("DL_ANDROID_COLDSTART_POLL=off did not disable the cold-start gap")
+		t.Fatal("cold-start gap is on without DL_ANDROID_COLDSTART_POLL=on")
 	}
-}
-
-// A settle carried past checks is dropped once the tap is older than
-// carriedSettleWindow: the check already waited for the new screen.
-func TestCarriedSettleExpires(t *testing.T) {
-	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
-	d := New(client, &core.PlatformInfo{}, &mockShell{})
-	d.lastStepWasTap = true
-	d.lastTapAt = time.Now().Add(-2 * carriedSettleWindow)
-	d.Execute(&flow.AssertVisibleStep{BaseStep: flow.BaseStep{TimeoutMs: 1}, Selector: flow.Selector{ID: "x"}})
-	d.Execute(&flow.PressKeyStep{BaseStep: flow.BaseStep{StepType: flow.StepPressKey}, Key: "back"})
-	if client.settles != 0 {
-		t.Fatalf("stale carried settle ran %d times, want 0", client.settles)
+	t.Setenv("DL_ANDROID_COLDSTART_POLL", "on")
+	if !coldStartPollEnabled() {
+		t.Fatal("DL_ANDROID_COLDSTART_POLL=on did not enable the cold-start gap")
 	}
 }

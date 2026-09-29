@@ -123,10 +123,6 @@ type Driver struct {
 
 	// Set after a successful tap; back/pressKey settle first when it is set
 	lastStepWasTap bool
-	// lastTapAt and checkedSinceTap limit a settle carried past checks to an
-	// action that comes soon after the tap (carriedSettleWindow).
-	lastTapAt       time.Time
-	checkedSinceTap bool
 	// coldStartUntil: after launchApp, openLink or clearState the app may be
 	// starting; visibility polls are spaced by coldStartPollGap until then.
 	coldStartUntil time.Time
@@ -531,19 +527,12 @@ func (d *Driver) SetWaitForIdleTimeout(ms int) error {
 func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	start := time.Now()
 
-	// The first action after a tap waits for the tap's UI to settle: a tap
-	// on duckduckgo's menu button while the previous menu was still closing
-	// did nothing. Checks in between do not wait (they poll, and an element
-	// on both screens passes either way) and do not cancel the wait: DDG
-	// privacy 9 tapped Refresh, asserted a button the old page still showed,
-	// and tapped it 0.8s later mid-reload. With a WebView connected, the
-	// action also waits for the page to load.
-	carried := d.checkedSinceTap && time.Since(d.lastTapAt) >= carriedSettleWindow
-	if d.lastStepWasTap && actsOnScreen(step) && !carried {
+	// An action right after a tap waits for the tap's UI to settle first: a
+	// tap on duckduckgo's menu button while the previous menu was still
+	// closing did nothing. Asserts and checks do not wait: they poll, and an
+	// element on both screens is a correct pass either way.
+	if d.lastStepWasTap && actsOnScreen(step) {
 		d.settle(settleAfterTapTimeoutMs, "tap")
-		if d.webView != nil && d.webView.isConnected() {
-			d.webView.waitForLoadAfterAction(webLoadWait)
-		}
 	}
 
 	var result *core.CommandResult
@@ -683,21 +672,13 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	switch step.(type) {
 	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep:
 		d.lastStepWasTap = result.Success
-		d.lastTapAt, d.checkedSinceTap = time.Now(), false
 	case *flow.LaunchAppStep, *flow.OpenLinkStep, *flow.ClearStateStep:
 		if result.Success && coldStartPollEnabled() {
 			d.coldStartUntil = time.Now().Add(coldStartWindow)
 		}
-		if actsOnScreen(step) {
-			d.lastStepWasTap = false
-		}
+		d.lastStepWasTap = false
 	default:
-		// Only an action uses up the pending settle; checks leave it.
-		if actsOnScreen(step) {
-			d.lastStepWasTap = false
-		} else {
-			d.checkedSinceTap = true
-		}
+		d.lastStepWasTap = false
 	}
 
 	result.Duration = time.Since(start)
@@ -2232,25 +2213,19 @@ func actsOnScreen(step flow.Step) bool {
 // spinning the agent.
 const snapshotPollGap = 50 * time.Millisecond
 
-// carriedSettleWindow: a settle carried past checks applies only to an action
-// within this long of the tap. A check that passed at once (DDG privacy 9's
-// assert on the old page, then a tap 0.8s after Refresh) leaves the screen
-// unsettled; a check that polled longer already waited for the new screen,
-// and settling again cost DDG's ad-click flows 25-30%.
-const carriedSettleWindow = 1500 * time.Millisecond
-
 // A cold-starting app draws its first screen on its UI thread, and each
 // snapshot runs accessibility work there too. Expo's bare-expo stayed on a
 // blank screen after clearState + openLink in 2 of 3 runs on this driver
 // (never on uiautomator2 or Maestro) while polled every ~100ms. For
 // coldStartWindow after a launch the polls are spaced by coldStartPollGap.
-// DL_ANDROID_COLDSTART_POLL=off turns this off (for A/B runs).
+// Experimental and off by default until an A/B shows it helps:
+// DL_ANDROID_COLDSTART_POLL=on turns it on.
 const (
 	coldStartWindow  = 5 * time.Second
 	coldStartPollGap = 300 * time.Millisecond
 )
 
-func coldStartPollEnabled() bool { return os.Getenv("DL_ANDROID_COLDSTART_POLL") != "off" }
+func coldStartPollEnabled() bool { return os.Getenv("DL_ANDROID_COLDSTART_POLL") == "on" }
 
 // pollGap is the wait between two visibility reads.
 func (d *Driver) pollGap() time.Duration {
