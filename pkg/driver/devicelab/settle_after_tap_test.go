@@ -149,6 +149,7 @@ func TestSettleAfterTapSurvivesChecks(t *testing.T) {
 	back := &flow.PressKeyStep{BaseStep: flow.BaseStep{StepType: flow.StepPressKey}, Key: "back"}
 
 	d.lastStepWasTap = true
+	d.lastTapAt = time.Now()
 	d.Execute(&flow.AssertVisibleStep{BaseStep: flow.BaseStep{TimeoutMs: 1}, Selector: flow.Selector{ID: "pay-button"}})
 	if client.settles != 0 {
 		t.Fatalf("a check settled %d times; checks poll instead", client.settles)
@@ -184,5 +185,19 @@ func TestPollGapSpacedDuringColdStart(t *testing.T) {
 	t.Setenv("DL_ANDROID_COLDSTART_POLL", "off")
 	if coldStartPollEnabled() {
 		t.Fatal("DL_ANDROID_COLDSTART_POLL=off did not disable the cold-start gap")
+	}
+}
+
+// A settle carried past checks is dropped once the tap is older than
+// carriedSettleWindow: the check already waited for the new screen.
+func TestCarriedSettleExpires(t *testing.T) {
+	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
+	d := New(client, &core.PlatformInfo{}, &mockShell{})
+	d.lastStepWasTap = true
+	d.lastTapAt = time.Now().Add(-2 * carriedSettleWindow)
+	d.Execute(&flow.AssertVisibleStep{BaseStep: flow.BaseStep{TimeoutMs: 1}, Selector: flow.Selector{ID: "x"}})
+	d.Execute(&flow.PressKeyStep{BaseStep: flow.BaseStep{StepType: flow.StepPressKey}, Key: "back"})
+	if client.settles != 0 {
+		t.Fatalf("stale carried settle ran %d times, want 0", client.settles)
 	}
 }
