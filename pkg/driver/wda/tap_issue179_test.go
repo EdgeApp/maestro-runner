@@ -155,3 +155,46 @@ func TestSettleAfterTap(t *testing.T) {
 		})
 	}
 }
+
+// settleAfterScroll waits while the element scrollUntilVisible found is still
+// moving and stops at the first steady reading; an element already at rest
+// costs two reads.
+func TestSettleAfterScroll(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ys    []int // successive y positions; -1 = element gone
+		reads int
+	}{
+		{"decelerating then rests", []int{520, 470, 436, 415, 406, 406}, 6},
+		{"already at rest", []int{300, 300}, 2},
+		{"gone", []int{-1}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				mu.Lock()
+				i := calls
+				calls++
+				mu.Unlock()
+				if i >= len(tc.ys) {
+					i = len(tc.ys) - 1
+				}
+				if tc.ys[i] == -1 {
+					w.WriteHeader(http.StatusNotFound)
+					jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"error": "stale element reference"}})
+					return
+				}
+				jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"x": 16, "y": tc.ys[i], "width": 370, "height": 60}})
+			}))
+			defer server.Close()
+			d := createTestDriver(server)
+			d.lastScrollID = "found"
+			d.settleAfterScroll()
+			if calls != tc.reads {
+				t.Errorf("rect reads = %d, want %d", calls, tc.reads)
+			}
+		})
+	}
+}

@@ -780,6 +780,9 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 			// With no screen size to compare against, accept the find as before.
 			w, h, sizeErr := d.screenSize()
 			if sizeErr != nil || core.MeetsVisibility(info.Bounds, w, h, step.VisibilityPercentage) {
+				if i > 0 {
+					d.lastScrollID = info.ID
+				}
 				return successResult("Element found after scrolling", info)
 			}
 		}

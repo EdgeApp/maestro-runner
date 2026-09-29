@@ -54,6 +54,10 @@ type Driver struct {
 	// The element the last step tapped, while the next step may still need
 	// to wait for that tap's UI to settle
 	lastTapID string
+
+	// The element scrollUntilVisible found after scrolling, while its list
+	// may still be decelerating
+	lastScrollID string
 }
 
 // Crash-loop detection thresholds.
@@ -232,6 +236,13 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 		d.settleAfterTap()
 	}
 	d.lastTapID = ""
+	// Likewise after scrollUntilVisible: it returns once the element is in
+	// view, while the list can still be decelerating, and iOS takes a tap on
+	// a moving list as "stop scrolling" rather than a tap (#179).
+	if d.lastScrollID != "" && actsOnScreen(step) {
+		d.settleAfterScroll()
+	}
+	d.lastScrollID = ""
 
 	var result *core.CommandResult
 	switch s := step.(type) {
@@ -407,6 +418,27 @@ func (d *Driver) settleAfterTap() {
 		time.Sleep(tapSettleSample)
 	}
 	logger.Debug("[wda] screen still changing %v after the last tap — continuing", tapSettleLimit)
+}
+
+// settleAfterScroll waits for the element scrollUntilVisible found to come to
+// rest. Unlike after a tap, the motion has already begun when the element is
+// found, so two equal readings in a row mean the list has stopped.
+func (d *Driver) settleAfterScroll() {
+	start := time.Now()
+	var prev core.Bounds
+	for first := true; time.Since(start) < tapSettleLimit; first = false {
+		x, y, w, h, err := d.client.ElementRect(d.lastScrollID)
+		if err != nil {
+			return
+		}
+		cur := core.Bounds{X: x, Y: y, Width: w, Height: h}
+		if !first && cur == prev {
+			return
+		}
+		prev = cur
+		time.Sleep(tapSettleSample)
+	}
+	logger.Debug("[wda] list still moving %v after scrollUntilVisible — continuing", tapSettleLimit)
 }
 
 // trackCrashLoop counts consecutive "app died on launch" failures and trips a
