@@ -1,6 +1,7 @@
 package report
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -106,6 +107,8 @@ func GenerateAllure(reportDir string) error {
 			return fmt.Errorf("write allure result %s: %w", entry.ID, err)
 		}
 	}
+
+	copyAllureAttachments(reportDir, allureDir, flows)
 
 	// Write categories.json
 	if err := writeAllureCategories(allureDir); err != nil {
@@ -229,14 +232,14 @@ func buildAllureStep(cmd Command) AllureStep {
 	if cmd.Artifacts.ScreenshotBefore != "" {
 		attachments = append(attachments, AllureAttachment{
 			Name:   "Before",
-			Source: filepath.Base(cmd.Artifacts.ScreenshotBefore),
+			Source: allureAttachmentName(cmd.Artifacts.ScreenshotBefore),
 			Type:   "image/png",
 		})
 	}
 	if cmd.Artifacts.ScreenshotAfter != "" {
 		attachments = append(attachments, AllureAttachment{
 			Name:   "After",
-			Source: filepath.Base(cmd.Artifacts.ScreenshotAfter),
+			Source: allureAttachmentName(cmd.Artifacts.ScreenshotAfter),
 			Type:   "image/png",
 		})
 	}
@@ -264,14 +267,14 @@ func collectAttachmentsRecursive(commands []Command, attachments *[]AllureAttach
 		if cmd.Artifacts.ScreenshotBefore != "" {
 			*attachments = append(*attachments, AllureAttachment{
 				Name:   "Screenshot",
-				Source: filepath.Base(cmd.Artifacts.ScreenshotBefore),
+				Source: allureAttachmentName(cmd.Artifacts.ScreenshotBefore),
 				Type:   "image/png",
 			})
 		}
 		if cmd.Artifacts.ScreenshotAfter != "" {
 			*attachments = append(*attachments, AllureAttachment{
 				Name:   "Screenshot",
-				Source: filepath.Base(cmd.Artifacts.ScreenshotAfter),
+				Source: allureAttachmentName(cmd.Artifacts.ScreenshotAfter),
 				Type:   "image/png",
 			})
 		}
@@ -279,6 +282,13 @@ func collectAttachmentsRecursive(commands []Command, attachments *[]AllureAttach
 			collectAttachmentsRecursive(cmd.SubCommands, attachments)
 		}
 	}
+}
+
+// allureAttachmentName keeps attachments flat without collisions between flows
+// that use the same screenshot filename. Use the same name in JSON and on disk.
+func allureAttachmentName(source string) string {
+	digest := sha256.Sum256([]byte(filepath.ToSlash(filepath.Clean(source))))
+	return fmt.Sprintf("%x-attachment%s", digest, filepath.Ext(source))
 }
 
 // copyAllureAttachments copies screenshot files from assets subdirs into allure-results/ flat.
@@ -295,7 +305,7 @@ func copyCommandAttachments(reportDir, allureDir string, commands []Command) {
 				continue
 			}
 			src := filepath.Join(reportDir, path)
-			dst := filepath.Join(allureDir, filepath.Base(path))
+			dst := filepath.Join(allureDir, allureAttachmentName(path))
 			copyFile(src, dst)
 		}
 		if len(cmd.SubCommands) > 0 {
