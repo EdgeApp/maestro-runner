@@ -381,90 +381,80 @@ func TestAllureNestedSteps(t *testing.T) {
 }
 
 func TestAllureScreenshotAttachments(t *testing.T) {
-	tmpDir := t.TempDir()
-	now := time.Now()
-	endTime := now.Add(5 * time.Second)
-	d := int64(5000)
-	cmdDur := int64(2500)
-
-	// Create fake screenshots
-	assetsDir := filepath.Join(tmpDir, "assets", "flow-000")
-	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(assetsDir, "cmd-000-before.png"), []byte("fake-png-before"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(assetsDir, "cmd-000-after.png"), []byte("fake-png-after"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	index := &Index{
-		Version: "1.0.0", Status: StatusPassed,
-		StartTime: now, EndTime: &endTime, LastUpdated: now,
-		Device:  Device{ID: "test", Name: "Pixel 6", Platform: "android"},
-		Summary: Summary{Total: 1, Passed: 1},
-		Flows: []FlowEntry{
-			{
-				Index: 0, ID: "flow-000", Name: "Screenshot Test",
-				SourceFile: "flows/screenshots.yaml", DataFile: "flows/flow-000.json",
-				Status: StatusPassed, Duration: &d, StartTime: &now, EndTime: &endTime,
-			},
-		},
-	}
-
-	flow0 := FlowDetail{
-		ID: "flow-000", Name: "Screenshot Test", StartTime: now, Duration: &d,
-		Commands: []Command{
-			{
-				ID: "cmd-000", Type: "tapOn", Label: "Tap button", Status: StatusPassed, Duration: &cmdDur,
-				StartTime: &now, EndTime: &endTime,
+	reportDir := t.TempDir()
+	index := &Index{Version: "1.0.0", Status: StatusPassed}
+	var flows []FlowDetail
+	for _, id := range []string{"flow-000", "flow-001"} {
+		assetsDir := filepath.Join(reportDir, "assets", id)
+		if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"before.png", "after.png", "nested.png"} {
+			if err := os.WriteFile(filepath.Join(assetsDir, name), []byte(id+":"+name), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		index.Flows = append(index.Flows, FlowEntry{
+			ID: id, Name: id, Status: StatusPassed, DataFile: "flows/" + id + ".json",
+		})
+		flows = append(flows, FlowDetail{
+			ID: id, Name: id,
+			Commands: []Command{{
+				Type: "runFlow",
 				Artifacts: CommandArtifacts{
-					ScreenshotBefore: "assets/flow-000/cmd-000-before.png",
-					ScreenshotAfter:  "assets/flow-000/cmd-000-after.png",
+					ScreenshotBefore: "assets/" + id + "/before.png",
+					ScreenshotAfter:  "assets/" + id + "/after.png",
 				},
-			},
-		},
+				SubCommands: []Command{{
+					Type:      "tapOn",
+					Artifacts: CommandArtifacts{ScreenshotAfter: "assets/" + id + "/nested.png"},
+				}},
+			}},
+		})
+	}
+	writeTestReport(t, reportDir, index, flows)
+	if err := GenerateAllure(reportDir); err != nil {
+		t.Fatal(err)
 	}
 
-	writeTestReport(t, tmpDir, index, []FlowDetail{flow0})
-
-	if err := GenerateAllure(tmpDir); err != nil {
-		t.Fatalf("GenerateAllure: %v", err)
+	// The exported directory must remain usable without the original assets.
+	if err := os.RemoveAll(filepath.Join(reportDir, "assets")); err != nil {
+		t.Fatal(err)
 	}
-
-	data, _ := os.ReadFile(filepath.Join(tmpDir, "allure-results", "flow-000-result.json"))
-	var result AllureResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-
-	// Flow-level attachments
-	if len(result.Attachments) != 2 {
-		t.Fatalf("expected 2 flow attachments, got %d", len(result.Attachments))
-	}
-	if result.Attachments[0].Source != "cmd-000-before.png" {
-		t.Errorf("attachment[0] source = %q", result.Attachments[0].Source)
-	}
-	if result.Attachments[1].Source != "cmd-000-after.png" {
-		t.Errorf("attachment[1] source = %q", result.Attachments[1].Source)
-	}
-	if result.Attachments[0].Type != "image/png" {
-		t.Errorf("attachment type = %q", result.Attachments[0].Type)
-	}
-
-	// Step-level attachments
-	if len(result.Steps) != 1 {
-		t.Fatalf("expected 1 step, got %d", len(result.Steps))
-	}
-	if len(result.Steps[0].Attachments) != 2 {
-		t.Fatalf("expected 2 step attachments, got %d", len(result.Steps[0].Attachments))
-	}
-	if result.Steps[0].Attachments[0].Name != "Before" {
-		t.Errorf("step attachment[0] name = %q, want Before", result.Steps[0].Attachments[0].Name)
-	}
-	if result.Steps[0].Attachments[1].Name != "After" {
-		t.Errorf("step attachment[1] name = %q, want After", result.Steps[0].Attachments[1].Name)
+	allureDir := filepath.Join(reportDir, "allure-results")
+	for _, flow := range flows {
+		data, err := os.ReadFile(filepath.Join(allureDir, flow.ID+"-result.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result AllureResult
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatal(err)
+		}
+		checkAttachment := func(attachment AllureAttachment, filename string) {
+			t.Helper()
+			content, err := os.ReadFile(filepath.Join(allureDir, attachment.Source))
+			if err != nil {
+				t.Errorf("attachment %s: %v", attachment.Source, err)
+				return
+			}
+			if want := flow.ID + ":" + filename; string(content) != want {
+				t.Errorf("attachment %s = %q, want %q", attachment.Source, content, want)
+			}
+		}
+		if len(result.Attachments) != 3 || len(result.Steps) != 1 {
+			t.Fatalf("unexpected attachments or steps: %+v", result)
+		}
+		step := result.Steps[0]
+		if len(step.Attachments) != 2 || len(step.Steps) != 1 || len(step.Steps[0].Attachments) != 1 {
+			t.Fatalf("unexpected nested attachments: %+v", step)
+		}
+		for i, filename := range []string{"before.png", "after.png", "nested.png"} {
+			checkAttachment(result.Attachments[i], filename)
+		}
+		checkAttachment(step.Attachments[0], "before.png")
+		checkAttachment(step.Attachments[1], "after.png")
+		checkAttachment(step.Steps[0].Attachments[0], "nested.png")
 	}
 }
 
@@ -496,7 +486,7 @@ func TestAllureCopyAttachments(t *testing.T) {
 	copyAllureAttachments(reportDir, allureDir, flows)
 
 	// Check file was copied
-	copied, err := os.ReadFile(filepath.Join(allureDir, "cmd-000-after.png"))
+	copied, err := os.ReadFile(filepath.Join(allureDir, allureAttachmentName("assets/flow-000/cmd-000-after.png")))
 	if err != nil {
 		t.Fatalf("copied file not found: %v", err)
 	}
@@ -947,10 +937,10 @@ func TestAllureCopyAttachmentsWithSubcommands(t *testing.T) {
 	copyAllureAttachments(reportDir, allureDir, flows)
 
 	// Both files should be copied flat
-	if _, err := os.Stat(filepath.Join(allureDir, "cmd-000-before.png")); err != nil {
+	if _, err := os.Stat(filepath.Join(allureDir, allureAttachmentName("assets/flow-000/cmd-000-before.png"))); err != nil {
 		t.Error("parent screenshot not copied")
 	}
-	if _, err := os.Stat(filepath.Join(allureDir, "sub-000-after.png")); err != nil {
+	if _, err := os.Stat(filepath.Join(allureDir, allureAttachmentName("assets/flow-000/sub-000-after.png"))); err != nil {
 		t.Error("subcommand screenshot not copied")
 	}
 }
