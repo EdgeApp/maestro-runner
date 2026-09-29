@@ -123,6 +123,10 @@ type Driver struct {
 
 	// Set after a successful tap; back/pressKey settle first when it is set
 	lastStepWasTap bool
+	// webLoadPending: a tap was made while a WebView is connected, so the
+	// page may be navigating or reloading. The next on-screen action waits
+	// for the page first, even with checks in between (webLoadWait).
+	webLoadPending bool
 
 	// Permissions each app declares, read once per run (nil: unreadable)
 	declaredPerms map[string]map[string]bool
@@ -531,6 +535,12 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	if d.lastStepWasTap && actsOnScreen(step) {
 		d.settle(settleAfterTapTimeoutMs, "tap")
 	}
+	if d.webLoadPending && actsOnScreen(step) {
+		d.webLoadPending = false
+		if d.webView != nil && d.webView.isConnected() {
+			d.webView.waitForLoadAfterAction(webLoadWait)
+		}
+	}
 
 	var result *core.CommandResult
 	switch s := step.(type) {
@@ -669,6 +679,9 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	switch step.(type) {
 	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep:
 		d.lastStepWasTap = result.Success
+		if result.Success && d.webView != nil && d.webView.isConnected() {
+			d.webLoadPending = true
+		}
 	default:
 		d.lastStepWasTap = false
 	}

@@ -1365,6 +1365,36 @@ func (m *webViewManager) waitForPageReady() {
 	}
 }
 
+// webLoadWait bounds the wait for a WebView page after a tap. DDG privacy 9
+// tapped Refresh, asserted a button that the old page still showed, and
+// tapped it 0.8s later while the page reloaded: the privacy dashboard then
+// had no trackers. Maestro's settle waits out the reload; so does the iOS
+// driver's web readiness.
+const webLoadWait = 3 * time.Second
+
+// waitForLoadAfterAction waits, at most `limit`, for the page to finish
+// loading: document.readyState "complete", then no request in flight for
+// 500ms. An idle page returns at once.
+func (m *webViewManager) waitForLoadAfterAction(limit time.Duration) {
+	page := m.rodPage()
+	if page == nil {
+		return
+	}
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		result, err := page.Timeout(500 * time.Millisecond).Eval(`() => document.readyState`)
+		if err != nil || result.Value.Str() == "complete" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if t := m.getNetworkTracker(); t != nil {
+		if left := time.Until(deadline); left > 0 {
+			t.waitForIdle(left, 500*time.Millisecond)
+		}
+	}
+}
+
 // cdpCallTimeout is the maximum time any single CDP find attempt can take.
 // Prevents hangs when the WebView is suspended, doing heavy JS, or unresponsive.
 const cdpCallTimeout = 3 * time.Second
