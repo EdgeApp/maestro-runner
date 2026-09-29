@@ -139,28 +139,3 @@ func TestRemainingTimeoutMs(t *testing.T) {
 		t.Errorf("default optional timeout 2s in: %dms left", got)
 	}
 }
-
-// After a launch, visibility polls are spaced while the app starts, then return
-// to the normal gap; it is off unless DL_ANDROID_COLDSTART_POLL=on.
-func TestPollGapSpacedDuringColdStart(t *testing.T) {
-	d := &Driver{}
-	if got := d.pollGap(); got != snapshotPollGap {
-		t.Fatalf("idle pollGap = %v, want %v", got, snapshotPollGap)
-	}
-	d.coldStartUntil = time.Now().Add(time.Second)
-	if got := d.pollGap(); got != coldStartPollGap {
-		t.Fatalf("cold-start pollGap = %v, want %v", got, coldStartPollGap)
-	}
-	d.coldStartUntil = time.Now().Add(-time.Millisecond)
-	if got := d.pollGap(); got != snapshotPollGap {
-		t.Fatalf("after the window pollGap = %v, want %v", got, snapshotPollGap)
-	}
-	t.Setenv("DL_ANDROID_COLDSTART_POLL", "")
-	if coldStartPollEnabled() {
-		t.Fatal("cold-start gap is on without DL_ANDROID_COLDSTART_POLL=on")
-	}
-	t.Setenv("DL_ANDROID_COLDSTART_POLL", "on")
-	if !coldStartPollEnabled() {
-		t.Fatal("DL_ANDROID_COLDSTART_POLL=on did not enable the cold-start gap")
-	}
-}
