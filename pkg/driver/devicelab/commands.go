@@ -167,7 +167,7 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 						if err != nil {
 							lastErr = err
 						}
-						time.Sleep(snapshotPollGap)
+						time.Sleep(d.pollGap())
 						continue
 					}
 				}
@@ -803,7 +803,7 @@ func (d *Driver) assertNotVisible(step *flow.AssertNotVisibleStep) *core.Command
 	pollInterval := 500 * time.Millisecond
 	bySnapshot := checksBySnapshot(step.Selector)
 	if bySnapshot {
-		pollInterval = snapshotPollGap
+		pollInterval = d.pollGap()
 	}
 
 	for {
@@ -2704,7 +2704,7 @@ func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
 				}
 			}
 			if checksBySnapshot(*selector) {
-				time.Sleep(snapshotPollGap)
+				time.Sleep(d.pollGap())
 			}
 		}
 	}

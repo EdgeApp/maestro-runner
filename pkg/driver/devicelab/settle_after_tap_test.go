@@ -165,3 +165,24 @@ func TestSettleAfterTapSurvivesChecks(t *testing.T) {
 		t.Fatalf("the settle was not used up by the first action: %d", client.settles)
 	}
 }
+
+// After a launch, visibility polls are spaced while the app starts, then return
+// to the normal gap; DL_ANDROID_COLDSTART_POLL=off keeps the normal gap.
+func TestPollGapSpacedDuringColdStart(t *testing.T) {
+	d := &Driver{}
+	if got := d.pollGap(); got != snapshotPollGap {
+		t.Fatalf("idle pollGap = %v, want %v", got, snapshotPollGap)
+	}
+	d.coldStartUntil = time.Now().Add(time.Second)
+	if got := d.pollGap(); got != coldStartPollGap {
+		t.Fatalf("cold-start pollGap = %v, want %v", got, coldStartPollGap)
+	}
+	d.coldStartUntil = time.Now().Add(-time.Millisecond)
+	if got := d.pollGap(); got != snapshotPollGap {
+		t.Fatalf("after the window pollGap = %v, want %v", got, snapshotPollGap)
+	}
+	t.Setenv("DL_ANDROID_COLDSTART_POLL", "off")
+	if coldStartPollEnabled() {
+		t.Fatal("DL_ANDROID_COLDSTART_POLL=off did not disable the cold-start gap")
+	}
+}

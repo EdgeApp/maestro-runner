@@ -123,6 +123,9 @@ type Driver struct {
 
 	// Set after a successful tap; back/pressKey settle first when it is set
 	lastStepWasTap bool
+	// coldStartUntil: after launchApp, openLink or clearState the app may be
+	// starting; visibility polls are spaced by coldStartPollGap until then.
+	coldStartUntil time.Time
 
 	// Permissions each app declares, read once per run (nil: unreadable)
 	declaredPerms map[string]map[string]bool
@@ -675,6 +678,13 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	switch step.(type) {
 	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep:
 		d.lastStepWasTap = result.Success
+	case *flow.LaunchAppStep, *flow.OpenLinkStep, *flow.ClearStateStep:
+		if result.Success && coldStartPollEnabled() {
+			d.coldStartUntil = time.Now().Add(coldStartWindow)
+		}
+		if actsOnScreen(step) {
+			d.lastStepWasTap = false
+		}
 	default:
 		// Only an action uses up the pending settle; checks leave it.
 		if actsOnScreen(step) {
@@ -2214,6 +2224,27 @@ func actsOnScreen(step flow.Step) bool {
 // spinning the agent.
 const snapshotPollGap = 50 * time.Millisecond
 
+// A cold-starting app draws its first screen on its UI thread, and each
+// snapshot runs accessibility work there too. Expo's bare-expo stayed on a
+// blank screen after clearState + openLink in 2 of 3 runs on this driver
+// (never on uiautomator2 or Maestro) while polled every ~100ms. For
+// coldStartWindow after a launch the polls are spaced by coldStartPollGap.
+// DL_ANDROID_COLDSTART_POLL=off turns this off (for A/B runs).
+const (
+	coldStartWindow  = 5 * time.Second
+	coldStartPollGap = 300 * time.Millisecond
+)
+
+func coldStartPollEnabled() bool { return os.Getenv("DL_ANDROID_COLDSTART_POLL") != "off" }
+
+// pollGap is the wait between two visibility reads.
+func (d *Driver) pollGap() time.Duration {
+	if time.Now().Before(d.coldStartUntil) {
+		return coldStartPollGap
+	}
+	return snapshotPollGap
+}
+
 // checksBySnapshot reports whether a visibility check for sel can be answered
 // from one whole-screen read matched on the host. Relative, index and CSS
 // selectors keep their own paths.
@@ -2274,7 +2305,7 @@ func (d *Driver) findVisible(sel flow.Selector, optional bool, stepTimeoutMs int
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(snapshotPollGap):
+		case <-time.After(d.pollGap()):
 		}
 		if info, err = d.findVisibleOnce(sel); err == nil {
 			return info, nil
