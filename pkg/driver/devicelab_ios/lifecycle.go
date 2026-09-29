@@ -72,6 +72,9 @@ func (d *Driver) launchApp(s *flow.LaunchAppStep) *core.CommandResult {
 		return core.ErrorResult(err, err.Error())
 	}
 	d.appID = bid
+	if d.realDevice {
+		return d.launchAppOnDevice(s, bid)
+	}
 	if s.ClearState {
 		if res := d.clearState(bid); !res.Success {
 			return res
@@ -136,6 +139,9 @@ func flattenArguments(args map[string]any) []string {
 
 // terminate stops an app; one that is not running counts as stopped.
 func (d *Driver) terminate(bid string) error {
+	if d.realDevice {
+		return d.terminateOnDevice(bid)
+	}
 	out, err := d.runSimctl("terminate", d.udid, bid)
 	if err == nil {
 		return nil
@@ -168,6 +174,9 @@ func (d *Driver) clearState(appID string) *core.CommandResult {
 	bid, err := d.bundleOr(appID)
 	if err != nil {
 		return core.ErrorResult(err, err.Error())
+	}
+	if d.realDevice {
+		return d.clearStateOnDevice(bid)
 	}
 	clear := d.reinstall
 	if os.Getenv(fastClearStateEnv) == "1" {
@@ -309,6 +318,10 @@ func wipeDataContainer(container string) error {
 }
 
 func (d *Driver) clearKeychain() *core.CommandResult {
+	if d.realDevice {
+		err := errOnDevice("clearKeychain")
+		return core.ErrorResult(err, err.Error()+" (the keychain is sandboxed; clearState reinstalls the app, which drops its entries)")
+	}
 	if _, err := d.runSimctl("keychain", d.udid, "reset"); err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("clearKeychain failed: %v", err))
 	}
@@ -377,6 +390,10 @@ func (d *Driver) setPermissions(s *flow.SetPermissionsStep) *core.CommandResult 
 		err := fmt.Errorf("setPermissions needs at least one permission")
 		return core.ErrorResult(err, err.Error())
 	}
+	if d.realDevice {
+		err := errOnDevice("setPermissions")
+		return core.ErrorResult(err, err.Error())
+	}
 	applied, failures := d.applyPermissions(bid, s.Permissions)
 	if len(failures) > 0 {
 		err := fmt.Errorf("some permissions failed: %s", strings.Join(failures, "; "))
@@ -394,7 +411,11 @@ func (d *Driver) openLink(link string, autoVerify *bool) *core.CommandResult {
 		err := fmt.Errorf("no link specified")
 		return core.ErrorResult(err, err.Error())
 	}
-	if _, err := d.runSimctl("openurl", d.udid, link); err != nil {
+	if d.realDevice {
+		if _, err := d.call("device", &Args{Action: "openURL", Value: link}); err != nil {
+			return core.ErrorResult(err, fmt.Sprintf("openLink failed: %v", err))
+		}
+	} else if _, err := d.runSimctl("openurl", d.udid, link); err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("openLink failed: %v", err))
 	}
 	if autoVerify != nil && *autoVerify {
@@ -412,6 +433,10 @@ func (d *Driver) setLocation(lat, lon string) *core.CommandResult {
 	lo, err := strconv.ParseFloat(strings.TrimSpace(lon), 64)
 	if err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("invalid longitude %q", lon))
+	}
+	if d.realDevice {
+		err := errOnDevice("setLocation")
+		return core.ErrorResult(err, err.Error())
 	}
 	if _, err := d.runSimctl("location", d.udid, "set", fmt.Sprintf("%f,%f", la, lo)); err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("setLocation failed: %v", err))
@@ -477,6 +502,10 @@ func (d *Driver) assertDarkMode(want bool) *core.CommandResult {
 // addMedia puts photos and videos in the Photos library (simctl addmedia)
 // and documents in "On My iPhone" storage.
 func (d *Driver) addMedia(files []string) *core.CommandResult {
+	if d.realDevice {
+		err := errOnDevice("addMedia")
+		return core.ErrorResult(err, err.Error())
+	}
 	if err := core.ValidateMediaFiles(files); err != nil {
 		return core.ErrorResult(err, err.Error())
 	}

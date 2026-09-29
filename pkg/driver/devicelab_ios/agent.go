@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -44,6 +45,9 @@ type AgentOptions struct {
 	Mode string
 	// ReadyTimeout bounds how long a launch may take to answer status.
 	ReadyTimeout time.Duration
+	// TeamID is the Apple development team the agent is signed with on a
+	// real device (StartDeviceAgent); simulators do not use it.
+	TeamID string
 }
 
 // Agent is a running agent on one simulator.
@@ -53,9 +57,15 @@ type Agent struct {
 	mode    string
 	version string
 
+	// device is set for a real iPhone (StartDeviceAgent), with the bundle
+	// ids the agent was signed as and the usbmux port forward.
+	device bool
+	ids    bundleIDs
+
 	mu       sync.Mutex
 	xcodeCmd *exec.Cmd
 	logFile  *os.File
+	forward  io.Closer
 }
 
 // Port is the agent's port on 127.0.0.1.
@@ -222,6 +232,9 @@ func (a *Agent) install(ctx context.Context, version string) error {
 // launch starts the agent on a free port, by simctl launch and, failing that
 // (auto mode), by xcodebuild test-without-building.
 func (a *Agent) launch(ctx context.Context) (*Client, error) {
+	if a.device {
+		return a.launchDevice(ctx)
+	}
 	port := PortFor(a.opts.UDID)
 	for i := 0; i < 50 && !portFree(port); i++ {
 		port++
@@ -378,6 +391,7 @@ func (a *Agent) Stop(ctx context.Context, c *Client) {
 		cancel()
 	}
 	a.stopXcodebuild()
+	a.closeForward()
 	_ = os.Remove(filepath.Join(stateDir(a.opts.UDID), "agent.json"))
 }
 

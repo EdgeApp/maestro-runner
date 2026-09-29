@@ -52,6 +52,6 @@ require (
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
-	howett.net/plist v1.0.1 // indirect
+	howett.net/plist v1.0.1
 	software.sslmate.com/src/go-pkcs12 v0.7.2 // indirect
 )

@@ -57,6 +57,13 @@ type Driver struct {
 	stagedApps map[string]stagedApp
 	recording  *simulator.Recording
 
+	// realDevice is set on a physical iPhone (SetRealDevice): what simctl
+	// does on a simulator goes through the agent or devicectl, or is
+	// reported as unavailable. appFile is --app-file, which clearState
+	// reinstalls from.
+	realDevice bool
+	appFile    string
+
 	// runSimctl runs `xcrun simctl args…`; tests replace it.
 	runSimctl func(args ...string) (string, error)
 
@@ -221,6 +228,9 @@ func (d *Driver) Close() {
 
 // StartScreenRecording implements core.ScreenRecorder (simulator, host-side).
 func (d *Driver) StartScreenRecording() error {
+	if d.realDevice {
+		return errOnDevice("screen recording")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.recording != nil {

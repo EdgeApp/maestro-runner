@@ -627,6 +627,10 @@ func (d *Driver) copyTextFrom(s *flow.CopyTextFromStep) *core.CommandResult {
 }
 
 func (d *Driver) setClipboard(text string) *core.CommandResult {
+	if d.realDevice {
+		err := errOnDevice("setClipboard")
+		return core.ErrorResult(err, err.Error())
+	}
 	cmd := simctlStdin(d.udid, text)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("setClipboard failed: %s", strings.TrimSpace(string(out))))
@@ -637,6 +641,10 @@ func (d *Driver) setClipboard(text string) *core.CommandResult {
 // pasteText types the simulator's clipboard (the executor pastes its own
 // copied text first; this is the fallback).
 func (d *Driver) pasteText() *core.CommandResult {
+	if d.realDevice {
+		err := errOnDevice("pasteText without a copyTextFrom first")
+		return core.ErrorResult(err, err.Error())
+	}
 	out, err := d.runSimctl("pbpaste", d.udid)
 	if err != nil {
 		return core.ErrorResult(err, fmt.Sprintf("pasteText: read clipboard failed: %v", err))

@@ -3,7 +3,8 @@
 // prebuilt (drivers/ios/devicelab-ios-agent/). The agent captures the screen,
 // does coarse matching on the device and synthesizes input; this package
 // applies Maestro's selector semantics to the candidates it returns, and uses
-// simctl for everything outside the app (install, permissions, state).
+// simctl for everything outside the app (install, permissions, state); on a
+// real iPhone, the agent and devicectl (device_*.go).
 //
 // Wire protocol: see PROTOCOL.md in the agent repository.
 package devicelab_ios
