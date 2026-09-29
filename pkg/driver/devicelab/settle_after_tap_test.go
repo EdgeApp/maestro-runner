@@ -139,3 +139,29 @@ func TestRemainingTimeoutMs(t *testing.T) {
 		t.Errorf("default optional timeout 2s in: %dms left", got)
 	}
 }
+
+// A check between a tap and the next action does not cancel the settle: DDG
+// privacy 9 tapped Refresh, asserted a button the old page still showed, and
+// tapped it mid-reload.
+func TestSettleAfterTapSurvivesChecks(t *testing.T) {
+	client := &settleCountingClient{richClient: &richClient{trackingClient: newTrackingClient()}}
+	d := New(client, &core.PlatformInfo{}, &mockShell{})
+	back := &flow.PressKeyStep{BaseStep: flow.BaseStep{StepType: flow.StepPressKey}, Key: "back"}
+
+	d.lastStepWasTap = true
+	d.Execute(&flow.AssertVisibleStep{BaseStep: flow.BaseStep{TimeoutMs: 1}, Selector: flow.Selector{ID: "pay-button"}})
+	if client.settles != 0 {
+		t.Fatalf("a check settled %d times; checks poll instead", client.settles)
+	}
+	if !d.lastStepWasTap {
+		t.Fatal("a check cancelled the pending settle")
+	}
+	d.Execute(back)
+	if client.settles != 1 {
+		t.Fatalf("action after tap + check settled %d times, want 1", client.settles)
+	}
+	d.Execute(back)
+	if client.settles != 1 {
+		t.Fatalf("the settle was not used up by the first action: %d", client.settles)
+	}
+}

@@ -123,10 +123,6 @@ type Driver struct {
 
 	// Set after a successful tap; back/pressKey settle first when it is set
 	lastStepWasTap bool
-	// webLoadPending: a tap was made while a WebView is connected, so the
-	// page may be navigating or reloading. The next on-screen action waits
-	// for the page first, even with checks in between (webLoadWait).
-	webLoadPending bool
 
 	// Permissions each app declares, read once per run (nil: unreadable)
 	declaredPerms map[string]map[string]bool
@@ -528,15 +524,15 @@ func (d *Driver) SetWaitForIdleTimeout(ms int) error {
 func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	start := time.Now()
 
-	// An action right after a tap waits for the tap's UI to settle first: a
-	// tap on duckduckgo's menu button while the previous menu was still
-	// closing did nothing. Asserts and checks do not wait: they poll, and an
-	// element on both screens is a correct pass either way.
+	// The first action after a tap waits for the tap's UI to settle: a tap
+	// on duckduckgo's menu button while the previous menu was still closing
+	// did nothing. Checks in between do not wait (they poll, and an element
+	// on both screens passes either way) and do not cancel the wait: DDG
+	// privacy 9 tapped Refresh, asserted a button the old page still showed,
+	// and tapped it 0.8s later mid-reload. With a WebView connected, the
+	// action also waits for the page to load.
 	if d.lastStepWasTap && actsOnScreen(step) {
 		d.settle(settleAfterTapTimeoutMs, "tap")
-	}
-	if d.webLoadPending && actsOnScreen(step) {
-		d.webLoadPending = false
 		if d.webView != nil && d.webView.isConnected() {
 			d.webView.waitForLoadAfterAction(webLoadWait)
 		}
@@ -679,11 +675,11 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	switch step.(type) {
 	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep:
 		d.lastStepWasTap = result.Success
-		if result.Success && d.webView != nil && d.webView.isConnected() {
-			d.webLoadPending = true
-		}
 	default:
-		d.lastStepWasTap = false
+		// Only an action uses up the pending settle; checks leave it.
+		if actsOnScreen(step) {
+			d.lastStepWasTap = false
+		}
 	}
 
 	result.Duration = time.Since(start)
