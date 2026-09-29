@@ -217,7 +217,7 @@ func TestDeviceLabStartCommand(t *testing.T) {
 	steps := []string{
 		"rm -f " + deviceLabDriverLog + ";",
 		"echo '" + testMarker + "' > " + deviceLabDriverLog + ";",
-		"nohup am instrument -w " + DeviceLabDriverTest + "/" + DeviceLabDriverServer + ".DeviceLabDriverRunner",
+		"nohup am instrument -w --no-hidden-api-checks " + DeviceLabDriverTest + "/" + DeviceLabDriverServer + ".DeviceLabDriverRunner",
 		">> " + deviceLabDriverLog + " 2>&1 &",
 	}
 	pos := -1

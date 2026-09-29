@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
@@ -248,16 +249,27 @@ func captureVisibleTimeout(t *testing.T, se *ScriptEngine, cond flow.Condition) 
 	return got
 }
 
-// TestCheckCondition_FastDefaultTimeout reproduces #110: an unmet `when:`
-// condition must use the short default, not the driver's 7s optional-find
-// timeout (passing 0 would defer to that).
-func TestCheckCondition_FastDefaultTimeout(t *testing.T) {
+// With no timeout set, a when-condition gets Maestro's budget: 7s less the
+// time since the last step, never below the 1s floor and never 0 (which would
+// defer to the driver's 7s optional-find wait, #110).
+func TestCheckCondition_MaestroBudget(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
+	cond := flow.Condition{Visible: &flow.Selector{Text: "Nope"}}
 
-	got := captureVisibleTimeout(t, se, flow.Condition{Visible: &flow.Selector{Text: "Nope"}})
-	if got != defaultConditionTimeoutMs {
-		t.Errorf("when-condition timeout = %d, want fast default %d (0 would defer to the 7s optional-find timeout)", got, defaultConditionTimeoutMs)
+	se.MarkInteraction()
+	if got := captureVisibleTimeout(t, se, cond); got < maestroConditionTimeoutMs-500 || got > maestroConditionTimeoutMs {
+		t.Errorf("right after a step: timeout = %d, want about %d", got, maestroConditionTimeoutMs)
+	}
+
+	se.lastInteraction = time.Now().Add(-5 * time.Second)
+	if got := captureVisibleTimeout(t, se, cond); got < 1500 || got > 2000 {
+		t.Errorf("5s after a step: timeout = %d, want about 2000", got)
+	}
+
+	se.lastInteraction = time.Now().Add(-time.Minute)
+	if got := captureVisibleTimeout(t, se, cond); got != minConditionTimeoutMs {
+		t.Errorf("long after a step: timeout = %d, want the %d floor", got, minConditionTimeoutMs)
 	}
 }
 

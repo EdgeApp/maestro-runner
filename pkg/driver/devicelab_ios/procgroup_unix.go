@@ -7,11 +7,17 @@ import (
 	"syscall"
 )
 
-// setProcessGroup puts xcodebuild in its own process group.
-//
-// Without it, signalling the runner's group reaches xcodebuild too, and a
-// Ctrl-C aimed at a test run would tear down the build mid-flight rather than
-// letting the runner stop it in order.
+// setProcessGroup puts xcodebuild in its own process group, so stopping the
+// agent ends xcodebuild and the children it spawned together.
 func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+// killProcessGroup ends cmd and its process group.
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	_ = cmd.Process.Kill()
 }

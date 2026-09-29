@@ -624,8 +624,10 @@ extension RunnerTests {
       guard let x = command.x, let y = command.y, let x2 = command.x2, let y2 = command.y2 else {
         return Response(ok: false, error: ErrorPayload(message: "drag requires x, y, x2, and y2"))
       }
-      let holdDuration = min(max((command.durationMs ?? 60) / 1000.0, 0.016), 10.0)
+      // A hold of 0 is allowed: a synthesized swipe needs no press first.
+      let holdDuration = min(max((command.durationMs ?? 60) / 1000.0, 0), 10.0)
       let moveDuration = command.moveDurationMs.map { min(max($0 / 1000.0, 0.05), 30.0) }
+      let restDuration = command.restMs.map { min(max($0 / 1000.0, 0), 10.0) }
       let dragPoints = keyboardAvoidingDragPoints(app: activeApp, x: x, y: y, x2: x2, y2: y2)
       let dragFrame = resolvedDragVisualizationFrame(
         app: activeApp,
@@ -644,7 +646,8 @@ extension RunnerTests {
             x2: dragPoints.x2,
             y2: dragPoints.y2,
             holdDuration: holdDuration,
-            moveDuration: moveDuration
+            moveDuration: moveDuration,
+            restDuration: restDuration
           )
         }
       }
@@ -798,6 +801,8 @@ extension RunnerTests {
       return Response(ok: true, data: DataPayload(text: text))
     case .idle:
       return executeIdle(app: activeApp, command: command)
+    case .settle:
+      return executeSettle(command: command)
     case .snapshot:
       if let refused = unreadableSnapshotTarget(activeApp) {
         return refused
@@ -808,7 +813,8 @@ extension RunnerTests {
         depth: command.depth,
         scope: command.scope,
         raw: command.raw ?? false,
-        followsScreen: (command.appBundleId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        followsScreen: (command.appBundleId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty,
+        visibleOnly: command.visibleOnly ?? false
       )
       let target = activeApp
       return withSnapshotRequestTimeout {

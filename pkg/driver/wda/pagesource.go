@@ -220,7 +220,54 @@ func FilterBySelector(elements []*ParsedElement, sel flow.Selector) []*ParsedEle
 		result = append(result, elem)
 	}
 
-	return result
+	result = preferExactText(result, sel)
+	return preferExactCase(result, sel.Text, func(e *ParsedElement) []string { return regexTextsOf(e) })
+}
+
+// preferExactText narrows survivors to those whose text matches the literal
+// pattern exactly, when any of them do.
+//
+// Literal text matched by contains alone, so `text: "0"` resolved to a price
+// field reading "7000.00" ahead of the switch whose text is exactly "0", and
+// the tap landed in the wrong place. Upstream Maestro does not have this
+// problem because its matcher is a full match (Filters.kt uses
+// `regex.matches(value)`), so "0" never matches "7000.00" there at all; our
+// contains behaviour is the deviation. Preferring exact matches keeps the
+// looser behaviour available for the genuine substring selectors flows rely
+// on, while giving the specific element priority when one exists.
+//
+// Applied AFTER the full selector has been satisfied, never instead of it. An
+// exact text match that skipped the rest of the selector would return an
+// element with the right text and the wrong id — the OR behaviour removed in
+// #157/#158/#160. Reported by @nt-ben-leblond (#161).
+func preferExactText(matches []*ParsedElement, sel flow.Selector) []*ParsedElement {
+	if sel.Text == "" || looksLikeRegex(sel.Text) || len(matches) < 2 {
+		return matches
+	}
+	var exact []*ParsedElement
+	for _, elem := range matches {
+		if equalsAny(sel.Text, elem.Label, elem.Name, elem.Value, elem.PlaceholderValue) {
+			exact = append(exact, elem)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return matches
+}
+
+// equalsAny reports whether pattern equals any of the candidate strings,
+// ignoring case as Maestro's text matching does.
+func equalsAny(pattern string, candidates ...string) bool {
+	if pattern == "" {
+		return false
+	}
+	for _, c := range candidates {
+		if strings.EqualFold(c, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesSelector(elem *ParsedElement, sel flow.Selector) bool {
@@ -294,16 +341,15 @@ func matchesID(pattern, id string) bool {
 func matchesText(pattern string, texts ...string) bool {
 	pattern = norm.NFC.String(pattern)
 	if looksLikeRegex(pattern) {
-		// Case-sensitive, deliberately. Compiling with (?i) meant an anchored
-		// pattern could not distinguish what it was written to distinguish:
-		// `^SIGN OUT$` matched a "Sign out" row as readily as the "SIGN OUT"
-		// button, and whichever came first in the page source won (#151).
-		// Maestro matches regex selectors case-sensitively, and a flow written
-		// against it has to behave the same here.
+		// Case-insensitive, as in Maestro, which compiles every text selector
+		// with IGNORE_CASE: a flow written `(let's get started!|...)` passes
+		// there against "Let's get started!". When several elements match,
+		// FilterBySelector puts the ones matching in the pattern's own case
+		// first, so `^SIGN OUT$` still picks the "SIGN OUT" button over a
+		// "Sign out" row (#151).
 		//
-		// Plain text selectors are untouched — they are not regexes, and fall
-		// to the case-insensitive contains path below.
-		re, err := regexp.Compile(pattern)
+		// Plain text selectors fall to the case-insensitive contains path below.
+		re, err := regexp.Compile("(?i)" + pattern)
 		if err != nil {
 			// Invalid regex - fall back to contains
 			for _, text := range texts {
@@ -768,4 +814,40 @@ func sortByDistanceXReverse(elements []*ParsedElement, refX int) {
 			}
 		}
 	}
+}
+
+// preferExactCase puts the elements a regex text selector matches in its own
+// case ahead of those it matches only when case is ignored, keeping order
+// otherwise. Plain text and single matches are returned unchanged.
+func preferExactCase(elems []*ParsedElement, pattern string, textsOf func(*ParsedElement) []string) []*ParsedElement {
+	if len(elems) < 2 || !looksLikeRegex(pattern) {
+		return elems
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return elems
+	}
+	var exact, rest []*ParsedElement
+	for _, e := range elems {
+		if anyMatches(re, textsOf(e)) {
+			exact = append(exact, e)
+		} else {
+			rest = append(rest, e)
+		}
+	}
+	return append(exact, rest...)
+}
+
+func anyMatches(re *regexp.Regexp, texts []string) bool {
+	for _, t := range texts {
+		if t != "" && (re.MatchString(t) || re.MatchString(strings.ReplaceAll(t, "\n", " "))) {
+			return true
+		}
+	}
+	return false
+}
+
+// regexTextsOf lists the attributes a text selector is matched against.
+func regexTextsOf(e *ParsedElement) []string {
+	return []string{e.Label, e.Name, e.Value, e.PlaceholderValue}
 }

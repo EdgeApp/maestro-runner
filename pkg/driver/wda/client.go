@@ -26,9 +26,13 @@ type Client struct {
 }
 
 // NewClient creates a new WDA client.
+//
+// The address is 127.0.0.1, not localhost: WDA (and the go-ios forward to a
+// device) listen on IPv4, while localhost resolves to ::1 first, so any other
+// server bound to [::1] on the same port answered every WDA call.
 func NewClient(port uint16) *Client {
 	return &Client{
-		baseURL: fmt.Sprintf("http://localhost:%d", port),
+		baseURL: fmt.Sprintf("http://127.0.0.1:%d", port),
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
@@ -115,6 +119,7 @@ func (c *Client) DisableQuiescence() error {
 	return c.UpdateSettings(map[string]interface{}{
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
+		"animationCoolOffTimeout": 0,
 	})
 }
 
@@ -211,14 +216,37 @@ func (c *Client) LongPress(x, y float64, durationSec float64) error {
 	return err
 }
 
-// Swipe performs a swipe gesture.
+// swipeMoveMs is how long the finger takes to travel from start to end.
+const swipeMoveMs = 100
+
+// Swipe touches (fromX, fromY), moves to (toX, toY) in swipeMoveMs, rests
+// there for durationSec, then lifts — Maestro's iOS swipe shape. It goes
+// through W3C actions, which WDA turns into an XCPointerEventPath.
+//
+// It used to be /wda/dragfromtoforduration, where the duration is a hold
+// before the move: the finger sat still on whatever row was under it, and in
+// a list iOS took that as a tap on the row (DDG Settings opened a link in
+// Safari mid-scroll).
 func (c *Client) Swipe(fromX, fromY, toX, toY float64, durationSec float64) error {
-	_, err := c.post(c.sessionPath("/wda/dragfromtoforduration"), map[string]interface{}{
-		"fromX":    fromX,
-		"fromY":    fromY,
-		"toX":      toX,
-		"toY":      toY,
-		"duration": durationSec,
+	restMs := int(durationSec * 1000)
+	if restMs < 0 {
+		restMs = 0
+	}
+	_, err := c.post(c.sessionPath("/actions"), map[string]interface{}{
+		"actions": []interface{}{
+			map[string]interface{}{
+				"type":       "pointer",
+				"id":         "finger1",
+				"parameters": map[string]interface{}{"pointerType": "touch"},
+				"actions": []interface{}{
+					map[string]interface{}{"type": "pointerMove", "duration": 0, "x": fromX, "y": fromY},
+					map[string]interface{}{"type": "pointerDown", "button": 0},
+					map[string]interface{}{"type": "pointerMove", "duration": swipeMoveMs, "x": toX, "y": toY},
+					map[string]interface{}{"type": "pause", "duration": restMs},
+					map[string]interface{}{"type": "pointerUp", "button": 0},
+				},
+			},
+		},
 	})
 	return err
 }

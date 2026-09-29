@@ -69,6 +69,9 @@ type ElementResult struct {
 	// tap ("keyboard window", `android.widget.Button "OK"`). Empty when the tap
 	// was skipped on geometry alone, or not skipped at all.
 	BlockedBy string `json:"blockedBy"`
+
+	// MatchedIndex is which of findFirstAndClick's forms matched.
+	MatchedIndex int `json:"matchedIndex"`
 }
 
 // BoundsResult represents element bounds.

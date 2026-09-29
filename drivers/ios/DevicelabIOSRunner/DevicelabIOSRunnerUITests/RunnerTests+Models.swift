@@ -62,6 +62,12 @@ enum CommandType: String, Codable {
   // around every synthesized event, on demand. Read-only: it never
   // activates the app. Returns `idle` and `waitedMs`.
   case idle
+  // Local extension: wait, capped by `timeoutMs` (default 3000), until the
+  // screen stops changing — two consecutive small grayscale thumbnails of
+  // the screen agree. Maestro's static-screen test, done on the device so a
+  // settle costs one round trip. Never activates the app. Returns `idle`
+  // (true = settled) and `waitedMs`.
+  case settle
 }
 
 struct Command: Codable {
@@ -91,6 +97,10 @@ struct Command: Codable {
   // default drag velocity, which keeps the pre-existing swipe/scroll wire
   // shape byte-for-byte compatible.
   let moveDurationMs: Double?
+  // restMs — local extension for drag: how long the finger rests at the end
+  // point before lifting (Maestro's swipe shape). A short rest lets the
+  // content fling; a long one stops it where the swipe ends.
+  let restMs: Double?
   let direction: String?
   let orientation: String?
   let scale: Double?
@@ -102,6 +112,10 @@ struct Command: Codable {
   let depth: Int?
   let scope: String?
   let raw: Bool?
+  // visibleOnly — local extension for snapshot: serialize only elements at
+  // least 10% on screen (Maestro's filterOutOfBounds). The walk still covers
+  // the whole tree, but a web page's off-screen document stays on device.
+  let visibleOnly: Bool?
   let fullscreen: Bool?
   let mediaName: String?
   let mimeType: String?
@@ -118,6 +132,9 @@ struct Response: Codable {
   let ok: Bool
   let data: DataPayload?
   let error: ErrorPayload?
+  // Time the runner spent executing the command, stamped by the transport,
+  // so the host can split a slow step into runner work and round trip.
+  var serverMs: Double?
 
   init(ok: Bool, data: DataPayload? = nil, error: ErrorPayload? = nil) {
     self.ok = ok
@@ -308,4 +325,7 @@ struct SnapshotOptions {
   /// The caller named no app: the snapshot is of whatever is on screen, so
   /// it may move to the app in front if the one chosen earlier has left it.
   var followsScreen = false
+  /// Serialize only elements at least 10% on screen, as Maestro's
+  /// filterOutOfBounds does; the walk still visits the whole tree.
+  var visibleOnly = false
 }

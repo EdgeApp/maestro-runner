@@ -37,6 +37,12 @@ func (m *mockDeviceLabClient) FindAndClick(strategy, selector string) (*uiautoma
 
 // findClickGuardW/H record the screen size the driver passed, and
 // findClickClicked is what the fake agent reports back (#162).
+// FindFirstAndClickChecked reports an agent without the batched call, so the
+// driver falls back to FindAndClickChecked per form, which these tests script.
+func (m *mockDeviceLabClient) FindFirstAndClickChecked([]string, int, int, bool) (*uiautomator2.Element, bool, string, int, error) {
+	return nil, false, "", -1, errors.New("unknown_method: Unknown method: Gesture.findFirstAndClick")
+}
+
 func (m *mockDeviceLabClient) FindAndClickChecked(strategy, selector string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, error) {
 	elem, clicked, err := m.FindAndClickGuarded(strategy, selector, screenW, screenH)
 	m.findClickHitTest = hitTest
@@ -77,11 +83,22 @@ func (m *mockDeviceLabClient) PressKeyCode(keyCode int) error                { r
 func (m *mockDeviceLabClient) SendKeyActions(text string) error              { return nil }
 func (m *mockDeviceLabClient) AddMedia(name, mime string, data []byte) error { return nil }
 func (m *mockDeviceLabClient) Screenshot() ([]byte, error)                   { return nil, nil }
-func (m *mockDeviceLabClient) Source() (string, error)                       { return m.sourceFunc() }
-func (m *mockDeviceLabClient) GetOrientation() (string, error)               { return "PORTRAIT", nil }
-func (m *mockDeviceLabClient) SetOrientation(string) error                   { return nil }
-func (m *mockDeviceLabClient) GetClipboard() (string, error)                 { return "", nil }
-func (m *mockDeviceLabClient) SetClipboard(string) error                     { return nil }
+func (m *mockDeviceLabClient) Source() (string, error) {
+	if m.sourceFunc == nil {
+		return "", errors.New("no source")
+	}
+	return m.sourceFunc()
+}
+func (m *mockDeviceLabClient) Snapshot(int) (string, error) {
+	if m.sourceFunc == nil {
+		return "", errors.New("no source")
+	}
+	return m.sourceFunc()
+}
+func (m *mockDeviceLabClient) GetOrientation() (string, error) { return "PORTRAIT", nil }
+func (m *mockDeviceLabClient) SetOrientation(string) error     { return nil }
+func (m *mockDeviceLabClient) GetClipboard() (string, error)   { return "", nil }
+func (m *mockDeviceLabClient) SetClipboard(string) error       { return nil }
 func (m *mockDeviceLabClient) GetDeviceInfo() (*uiautomator2.DeviceInfo, error) {
 	return &uiautomator2.DeviceInfo{RealDisplaySize: "1080x2400"}, nil
 }

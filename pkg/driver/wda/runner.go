@@ -193,7 +193,7 @@ func (r *Runner) Build(ctx context.Context) error {
 // Start runs WDA on the device. Wraps a per-attempt startOnce in a retry
 // loop that detects xcodebuild stalls (no log output for stallDetectWindow)
 // and kills + retries up to maxStartupAttempts times. Matches the
-// equivalent retry logic in pkg/driver/devicelab_ios/setup.go.
+// equivalent retry logic in pkg/driver/devicelab_ios_legacy/setup.go.
 func (r *Runner) Start(ctx context.Context) error {
 	xctestrun, err := r.findXctestrun()
 	if err != nil {

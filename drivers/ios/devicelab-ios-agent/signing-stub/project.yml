@@ -1,0 +1,64 @@
+# A signing stub for the prebuilt devicelab-ios-agent on real iPhones. It holds
+# no agent code: maestro-runner builds it once per team and device with
+#
+#   xcodebuild build-for-testing -allowProvisioningUpdates \
+#     -allowProvisioningDeviceRegistration DEVELOPMENT_TEAM=<team> \
+#     -destination platform=iOS,id=<udid>
+#
+# so Xcode creates or downloads the development certificate and the
+# provisioning profiles that cover the device, then takes the identity,
+# profiles, entitlements and XCTest frameworks from the stub's build products
+# to re-sign the prebuilt agent (drivers/ios/devicelab-ios-agent/device/).
+#
+# The bundle identifiers are the agent's. DL_AGENT_BUNDLE_ID on the command
+# line replaces them (for a personal team, which cannot use the team's
+# wildcard App ID and must register an identifier nobody else holds).
+#
+# Regenerate SigningStub.xcodeproj with: xcodegen generate
+name: SigningStub
+
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    DL_AGENT_BUNDLE_ID: dev.devicelab.agent
+
+targets:
+  SigningStub:
+    type: application
+    platform: iOS
+    sources:
+      - SigningStub
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_AGENT_BUNDLE_ID)
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  SigningStubUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - SigningStubUITests
+    dependencies:
+      - target: SigningStub
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(DL_AGENT_BUNDLE_ID).uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: SigningStub
+
+schemes:
+  SigningStubUITests:
+    build:
+      targets:
+        SigningStubUITests: all
+    test:
+      targets:
+        - SigningStubUITests

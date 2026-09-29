@@ -1,20 +1,36 @@
 package wda
 
-import "testing"
+import (
+	"testing"
 
-// An anchored pattern exists to distinguish one element from another. Matching
-// it case-insensitively throws that away: `^SIGN OUT$` accepted a "Sign out"
-// row as readily as the "SIGN OUT" button it was written for, and whichever
-// came first in the page source won the tap (#151).
-func TestMatchesTextHonoursAnchorsAndCase(t *testing.T) {
+	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+)
+
+// Regex text selectors match ignoring case, as Maestro's do (IGNORE_CASE), and
+// anchors still mean the whole string.
+func TestMatchesTextHonoursAnchorsIgnoringCase(t *testing.T) {
 	if !matchesText("^SIGN OUT$", "SIGN OUT") {
 		t.Error("should match the text it was written for")
 	}
-	if matchesText("^SIGN OUT$", "Sign out") {
-		t.Error("an anchored pattern must not match a differently-cased string")
+	if !matchesText("^SIGN OUT$", "Sign out") {
+		t.Error("a regex should match ignoring case, as in Maestro")
 	}
 	if matchesText("^SIGN OUT$", "Sign out?") {
 		t.Error("an anchored pattern must not match a longer string")
+	}
+	if !matchesText("(let's get started!|Let's do it!)", "Let's get started!") {
+		t.Error("an alternation should match ignoring case (duckduckgo/Android's onboarding flow)")
+	}
+}
+
+// When both a "Sign out" row and a "SIGN OUT" button match `^SIGN OUT$`, the one
+// in the pattern's own case comes first, so the tap lands on it (#151).
+func TestFilterBySelectorPrefersExactCase(t *testing.T) {
+	row := &ParsedElement{Label: "Sign out"}
+	button := &ParsedElement{Label: "SIGN OUT"}
+	got := FilterBySelector([]*ParsedElement{row, button}, flow.Selector{Text: "^SIGN OUT$"})
+	if len(got) != 2 || got[0] != button {
+		t.Fatalf("got %v, want the SIGN OUT button first, then the row", got)
 	}
 }
 

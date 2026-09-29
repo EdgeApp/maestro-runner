@@ -41,7 +41,13 @@ final class RunnerTests: XCTestCase {
   var currentBundleId: String?
   let maxRequestBytes = 2 * 1024 * 1024
   let maxSnapshotElements = 600
-  let fastSnapshotLimit = 300
+  // Node budgets for the fast snapshot. A full tree (reports) caps at
+  // fastSnapshotLimit. A visibleOnly tree (lookups) counts only elements on
+  // screen, so a long web page no longer loses its footer to the cap; the
+  // higher budget is a guard against a pathological screen, not a working
+  // limit.
+  let fastSnapshotLimit = 1500
+  let visibleSnapshotLimit = 3000
   let mainThreadExecutionTimeout: TimeInterval = 30
   let appExistenceTimeout: TimeInterval = 30
   let retryCooldown: TimeInterval = 0.2
@@ -99,11 +105,37 @@ final class RunnerTests: XCTestCase {
 
   // MARK: - XCTest Entry
 
+  override class func setUp() {
+    // WDA's runner defaults: no XCTest screenshots or diagnostic screen
+    // recordings per action, local query evaluation, no autocorrect or
+    // predictive text, keyboard intros dismissed, and XCTest's own alert
+    // handling off (the runner handles alerts itself).
+    DLApplyRunnerDefaults()
+    super.setUp()
+  }
+
   override func setUp() {
     continueAfterFailure = true
+    // XCTest halts a test that "receives control" late (testmanagerd slow to
+    // connect), which stopped the runner; keep it running (WDA PR #664).
+    let halt = NSSelectorFromString("setShouldHaltWhenReceivesControl:")
+    if responds(to: halt) {
+      setValue(NSNumber(value: false), forKey: "shouldHaltWhenReceivesControl")
+    }
+    let resetHalt = NSSelectorFromString("setShouldSetShouldHaltWhenReceivesControl:")
+    if responds(to: resetHalt) {
+      setValue(NSNumber(value: false), forKey: "shouldSetShouldHaltWhenReceivesControl")
+    }
     // Override XCTest's clipped snapshot request params so element trees are
     // complete on deep React Native hierarchies (matches WDA / devicekit-ios).
     DLApplyCompleteSnapshotParams()
+  }
+
+  // An XCTest issue (a failed query, an assertion inside XCTest) is logged,
+  // never recorded: recording one ended the long-running test, and with it
+  // the runner, e.g. when a keyboard `.exists` query failed mid-command.
+  override func record(_ issue: XCTIssue) {
+    NSLog("DL_XCTEST_ISSUE type=%d %@", issue.type.rawValue, issue.compactDescription)
   }
 
   @MainActor

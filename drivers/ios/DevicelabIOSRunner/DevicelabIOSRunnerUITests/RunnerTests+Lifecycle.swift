@@ -373,7 +373,7 @@ extension RunnerTests {
 
   func isRunnerLifecycleCommand(_ command: CommandType) -> Bool {
     switch command {
-    case .shutdown, .recordStop, .screenshot, .uptime, .idleCheck, .awaitIdle:
+    case .shutdown, .recordStop, .screenshot, .uptime, .idleCheck, .awaitIdle, .settle:
       return true
     default:
       return false

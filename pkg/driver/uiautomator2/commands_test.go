@@ -616,8 +616,8 @@ func TestKillAppSuccess(t *testing.T) {
 		t.Errorf("expected success, got error: %v", result.Error)
 	}
 
-	if len(mock.commands) != 1 || mock.commands[0] != "am force-stop com.example.app" {
-		t.Errorf("expected force-stop command, got %v", mock.commands)
+	if len(mock.commands) != 1 || mock.commands[0] != "am kill com.example.app" {
+		t.Errorf("expected am kill (as Maestro killApp), got %v", mock.commands)
 	}
 }
 

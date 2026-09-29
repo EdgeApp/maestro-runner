@@ -1424,7 +1424,11 @@ func (d *Driver) killApp(step *flow.KillAppStep) *core.CommandResult {
 		return errorResult(fmt.Errorf("device not configured"), "killApp requires device access")
 	}
 
-	if _, err := d.device.Shell("am force-stop " + appID); err != nil {
+	// killApp is a system-initiated process death, as in Maestro (`am kill`):
+	// the app keeps its saved state and restores it on the next launch.
+	// force-stop is stopApp; using it here lost duckduckgo's open tab after
+	// a restart. Like Maestro, it only kills an app that is in the background.
+	if _, err := d.device.Shell("am kill " + appID); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to kill app: %v", err))
 	}
 

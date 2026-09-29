@@ -233,6 +233,10 @@ func parseStep(node *yaml.Node, sourcePath string) (Step, error) {
 		}
 	}
 
+	if step, ok, err := parseLegacyAction(node, sourcePath); ok {
+		return step, err
+	}
+
 	stepType, valueNode := extractStepType(node)
 	if stepType == "" || valueNode == nil {
 		return nil, &ParseError{
@@ -243,6 +247,37 @@ func parseStep(node *yaml.Node, sourcePath string) (Step, error) {
 	}
 
 	return decodeStep(StepType(stepType), valueNode, sourcePath)
+}
+
+// legacyActions are the words Maestro still accepts after `action:`, an old
+// spelling of commands that all exist under their own names: `- action: back`
+// is `- back` (YamlNavigationAction upstream). Suites written years ago use it
+// throughout, and without it such a flow failed to parse as an unknown step.
+var legacyActions = map[string]StepType{
+	"back":          StepBack,
+	"hideKeyboard":  StepHideKeyboard,
+	"scroll":        StepScroll,
+	"clearKeychain": StepClearKeychain,
+	"pasteText":     StepPasteText,
+}
+
+// parseLegacyAction handles `- action: <word>`. ok is false when the node is
+// not that form, so the caller parses it normally.
+func parseLegacyAction(node *yaml.Node, sourcePath string) (Step, bool, error) {
+	if len(node.Content) != 2 || node.Content[0].Value != "action" || node.Content[1].Kind != yaml.ScalarNode {
+		return nil, false, nil
+	}
+	word := node.Content[1].Value
+	stepType, known := legacyActions[word]
+	if !known {
+		return nil, true, &ParseError{
+			Path:    sourcePath,
+			Line:    node.Line,
+			Message: fmt.Sprintf("unknown action: %s (expected back, hideKeyboard, scroll, clearKeychain or pasteText)", word),
+		}
+	}
+	step, err := decodeStep(stepType, &yaml.Node{Kind: yaml.MappingNode}, sourcePath)
+	return step, true, err
 }
 
 func extractStepType(node *yaml.Node) (string, *yaml.Node) {
@@ -284,7 +319,29 @@ func isStepType(key string) bool {
 	return false
 }
 
+// dropNonNumericScalar removes key from a mapping when its value is a plain
+// word rather than a number. Maestro's swipe reads only the keys it knows, so
+// `speed: fast` (React Native's RNTester flows) is ignored there; here speed
+// is a number, and the word failed the whole flow at parse time. A ${VAR}
+// value is left for the decoder.
+//
 //nolint:gocyclo
+func dropNonNumericScalar(node *yaml.Node, key string) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k, v := node.Content[i], node.Content[i+1]
+		if k.Value != key || v.Kind != yaml.ScalarNode || strings.Contains(v.Value, "${") {
+			continue
+		}
+		if _, err := strconv.ParseFloat(strings.TrimSpace(v.Value), 64); err != nil {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+		}
+		return
+	}
+}
+
 func decodeStep(stepType StepType, valueNode *yaml.Node, sourcePath string) (Step, error) {
 	switch stepType {
 	case StepTapOn:
@@ -327,6 +384,7 @@ func decodeStep(stepType StepType, valueNode *yaml.Node, sourcePath string) (Ste
 
 	case StepSwipe:
 		var s SwipeStep
+		dropNonNumericScalar(valueNode, "speed")
 		if valueNode.Kind == yaml.ScalarNode {
 			s.Direction = valueNode.Value
 		} else if err := valueNode.Decode(&s); err != nil {

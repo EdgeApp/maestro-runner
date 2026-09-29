@@ -332,3 +332,41 @@ func TestExecuteTapWithOptions_ContextCancelled(t *testing.T) {
 		t.Error("expected failure due to context cancellation")
 	}
 }
+
+// nativeSettleDriver is a mockDriver with DeviceLab's native settle.
+type nativeSettleDriver struct {
+	*mockDriver
+	settleTimeout, settleQuiet int
+	settles                    int
+}
+
+func (d *nativeSettleDriver) WaitForSettle(timeoutMs, quietMs int) (bool, error) {
+	d.settles++
+	d.settleTimeout, d.settleQuiet = timeoutMs, quietMs
+	return true, nil
+}
+
+// waitToSettleTimeoutMs uses the driver's native settle when it has one:
+// the hierarchy comparison ended DDG privacy 9's settle mid-reload.
+func TestExecuteTapWithOptions_WaitToSettleNative(t *testing.T) {
+	var hierarchyCalls int32
+	driver := &nativeSettleDriver{mockDriver: &mockDriver{
+		executeFunc: func(step flow.Step) *core.CommandResult { return &core.CommandResult{Success: true} },
+		hierarchyFunc: func() ([]byte, error) {
+			atomic.AddInt32(&hierarchyCalls, 1)
+			return []byte("stable"), nil
+		},
+	}}
+	fr := &FlowRunner{ctx: context.Background(), driver: driver}
+
+	if res := fr.executeTapWithOptions(&flow.TapOnStep{}, tapOptions{WaitToSettleTimeoutMs: 3000}); !res.Success {
+		t.Fatal("expected success")
+	}
+	if driver.settles != 1 || driver.settleTimeout != 3000 || driver.settleQuiet != tapSettleQuietMs {
+		t.Errorf("native settle calls=%d timeout=%d quiet=%d, want 1, 3000, %d",
+			driver.settles, driver.settleTimeout, driver.settleQuiet, tapSettleQuietMs)
+	}
+	if n := atomic.LoadInt32(&hierarchyCalls); n != 0 {
+		t.Errorf("hierarchy read %d times; the native settle replaces it", n)
+	}
+}

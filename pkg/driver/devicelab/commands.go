@@ -86,6 +86,7 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		} else {
 			strategies = append(clickableStrategies, allStrategies...)
 		}
+		strategies = exactTextFirst(strategies)
 
 		timeout := d.calculateTimeout(step.IsOptional(), step.TimeoutMs)
 		ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
@@ -140,96 +141,47 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 					return d.tapOnBrowser(step)
 				}
 
-				for _, s := range strategies {
-					// Capture the pre-tap tree hash so a later failing
-					// assertion can detect "tap had no effect" and retry.
-					d.recordTap(step.Selector)
+				// Capture the pre-tap tree hash so a later failing assertion
+				// can detect "tap had no effect" and retry.
+				d.recordTap(step.Selector)
 
-					// Hand the agent the screen size so it can reject an
-					// untappable rect BEFORE injecting the tap. Previously the
-					// check below ran on a tap that had already landed: a
-					// clipped rect's centre sits outside the element, and with
-					// a bottom tab bar that centre is a tab, so the "rejected"
-					// tap navigated and desynced the flow (#162).
+				// One call tries every form on one read of the screen; an
+				// agent without it gets one call per form.
+				if !d.noFindFirstAndClick {
+					pairs := make([]string, 0, 2*len(strategies))
+					for _, s := range strategies {
+						pairs = append(pairs, s.Strategy, s.Value)
+					}
+					elem, clicked, blockedBy, idx, err := d.client.FindFirstAndClickChecked(pairs, guardW, guardH, hitTest)
+					if err == nil && idx >= 0 && idx < len(strategies) {
+						if res, retry := d.tapHit(step, strategies[idx], elem, clicked, blockedBy, guardW, guardH); res != nil {
+							return res
+						} else {
+							lastErr = retry
+						}
+						continue
+					}
+					if err != nil && strings.Contains(err.Error(), "Unknown method") {
+						d.noFindFirstAndClick = true
+					} else {
+						if err != nil {
+							lastErr = err
+						}
+						time.Sleep(snapshotPollGap)
+						continue
+					}
+				}
+
+				for _, s := range strategies {
+					d.recordTap(step.Selector)
 					elem, clicked, blockedBy, err := d.client.FindAndClickChecked(s.Strategy, s.Value, guardW, guardH, hitTest)
 					if err == nil {
-						info := &core.ElementInfo{
-							Visible: true,
-							Enabled: true,
+						if res, retry := d.tapHit(step, s, elem, clicked, blockedBy, guardW, guardH); res != nil {
+							return res
+						} else {
+							lastErr = retry
 						}
-						if t, err := elem.Text(); err == nil {
-							info.Text = t
-						}
-						rectOK := false
-						if rect, err := elem.Rect(); err == nil {
-							info.Bounds = core.Bounds{X: rect.X, Y: rect.Y, Width: rect.Width, Height: rect.Height}
-							rectOK = true
-						}
-						logger.Info("[devicelab] FindAndClick hit for %s via %s=%s: bounds=[%d,%d][%d,%d] (w=%d h=%d) center=(%d,%d)",
-							step.Selector.Describe(), s.Strategy, s.Value,
-							info.Bounds.X, info.Bounds.Y,
-							info.Bounds.X+info.Bounds.Width, info.Bounds.Y+info.Bounds.Height,
-							info.Bounds.Width, info.Bounds.Height,
-							info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2)
-
-						// #94: reject a tap whose rect is malformed (non-positive
-						// width/height) or whose centre lies off-screen, and keep
-						// polling. The agent's id-find path applies no on-screen
-						// filter, so a just-opened bottom sheet's first laid-out
-						// frame yields a clipped rect (top>bottom) and FindAndClick
-						// injects the tap off-screen — a no-op that leaves the flow
-						// desynced. A settled frame a moment later taps the real
-						// target. (Mirrors the assert-side viewport check from #39.)
-						// The agent declined to tap. Nothing was injected,
-						// so just keep polling for a settled frame.
-						if !clicked {
-							// blockedBy is set when the hit test found something
-							// over the point; otherwise the rect itself was bad.
-							if blockedBy != "" {
-								logger.Info("[devicelab] tap skipped before injection for %s: point covered by %s — re-polling",
-									step.Selector.Describe(), blockedBy)
-								lastErr = fmt.Errorf("tap point is covered by %s", blockedBy)
-							} else {
-								logger.Info("[devicelab] tap skipped before injection (untappable rect) for %s: w=%d h=%d center=(%d,%d) screen=%dx%d — re-polling",
-									step.Selector.Describe(), info.Bounds.Width, info.Bounds.Height,
-									info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, guardW, guardH)
-								lastErr = fmt.Errorf("element rect not tappable (w=%d h=%d center=(%d,%d) screen=%dx%d)",
-									info.Bounds.Width, info.Bounds.Height,
-									info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, guardW, guardH)
-							}
-							time.Sleep(50 * time.Millisecond)
-							break
-						}
-
-						// Fallback for an agent predating the guard above: it
-						// has already clicked, so this only stops a second tap.
-						if rectOK {
-							// Validate against the FULL physical display (same coordinate
-							// space as info.Bounds, which come from the accessibility
-							// hierarchy). screenSize() can report the USABLE height (minus
-							// the status bar), which wrongly condemns on-screen bottom
-							// buttons/FABs whose centre sits in the bottom band.
-							if sw, sh, serr := d.tappableScreenSize(); serr == nil && !boundsTappable(info.Bounds, sw, sh) {
-								logger.Info("[devicelab] tap rejected (off-screen/malformed rect) for %s: w=%d h=%d center=(%d,%d) screen=%dx%d — re-polling",
-									step.Selector.Describe(), info.Bounds.Width, info.Bounds.Height,
-									info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, sw, sh)
-								lastErr = fmt.Errorf("element rect not tappable (w=%d h=%d center=(%d,%d) screen=%dx%d)",
-									info.Bounds.Width, info.Bounds.Height,
-									info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, sw, sh)
-								time.Sleep(50 * time.Millisecond)
-								break
-							}
-						}
-
-						// Post-tap verification candidates (all wired but
-						// NOT called — empirically none reliably distinguish
-						// "tap had effect" from "tap fired ripple only" on
-						// the React Navigation showcase app):
-						//   d.tapHadEffectViaWindowUpdate("")  // Maestro's isWindowUpdating
-						//   d.tapHadEffect()                   // element-presence check
-						// Both produce false positives (ripples count) and
-						// false negatives (buttons persist across screens).
-						return successResult("Tapped on element", info)
+						break
 					}
 					lastErr = err
 				}
@@ -299,6 +251,90 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 	}
 
 	return successResult("Tapped on element", info)
+}
+
+// tapHit handles a find-and-click that found an element for step via s. It
+// returns the step's result when the tap went out, or the reason to poll
+// again when the agent declined to tap (covered point, untappable rect).
+func (d *Driver) tapHit(step *flow.TapOnStep, s LocatorStrategy, elem *uiautomator2.Element, clicked bool, blockedBy string, guardW, guardH int) (*core.CommandResult, error) {
+	var lastErr error
+	info := &core.ElementInfo{
+		Visible: true,
+		Enabled: true,
+	}
+	if t, err := elem.Text(); err == nil {
+		info.Text = t
+	}
+	rectOK := false
+	if rect, err := elem.Rect(); err == nil {
+		info.Bounds = core.Bounds{X: rect.X, Y: rect.Y, Width: rect.Width, Height: rect.Height}
+		rectOK = true
+	}
+	logger.Info("[devicelab] FindAndClick hit for %s via %s=%s: bounds=[%d,%d][%d,%d] (w=%d h=%d) center=(%d,%d)",
+		step.Selector.Describe(), s.Strategy, s.Value,
+		info.Bounds.X, info.Bounds.Y,
+		info.Bounds.X+info.Bounds.Width, info.Bounds.Y+info.Bounds.Height,
+		info.Bounds.Width, info.Bounds.Height,
+		info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2)
+
+	// #94: reject a tap whose rect is malformed (non-positive
+	// width/height) or whose centre lies off-screen, and keep
+	// polling. The agent's id-find path applies no on-screen
+	// filter, so a just-opened bottom sheet's first laid-out
+	// frame yields a clipped rect (top>bottom) and FindAndClick
+	// injects the tap off-screen — a no-op that leaves the flow
+	// desynced. A settled frame a moment later taps the real
+	// target. (Mirrors the assert-side viewport check from #39.)
+	// The agent declined to tap. Nothing was injected,
+	// so just keep polling for a settled frame.
+	if !clicked {
+		// blockedBy is set when the hit test found something
+		// over the point; otherwise the rect itself was bad.
+		if blockedBy != "" {
+			logger.Info("[devicelab] tap skipped before injection for %s: point covered by %s — re-polling",
+				step.Selector.Describe(), blockedBy)
+			lastErr = fmt.Errorf("tap point is covered by %s", blockedBy)
+		} else {
+			logger.Info("[devicelab] tap skipped before injection (untappable rect) for %s: w=%d h=%d center=(%d,%d) screen=%dx%d — re-polling",
+				step.Selector.Describe(), info.Bounds.Width, info.Bounds.Height,
+				info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, guardW, guardH)
+			lastErr = fmt.Errorf("element rect not tappable (w=%d h=%d center=(%d,%d) screen=%dx%d)",
+				info.Bounds.Width, info.Bounds.Height,
+				info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, guardW, guardH)
+		}
+		time.Sleep(50 * time.Millisecond)
+		return nil, lastErr
+	}
+
+	// Fallback for an agent predating the guard above: it
+	// has already clicked, so this only stops a second tap.
+	if rectOK {
+		// Validate against the FULL physical display (same coordinate
+		// space as info.Bounds, which come from the accessibility
+		// hierarchy). screenSize() can report the USABLE height (minus
+		// the status bar), which wrongly condemns on-screen bottom
+		// buttons/FABs whose centre sits in the bottom band.
+		if sw, sh, serr := d.tappableScreenSize(); serr == nil && !boundsTappable(info.Bounds, sw, sh) {
+			logger.Info("[devicelab] tap rejected (off-screen/malformed rect) for %s: w=%d h=%d center=(%d,%d) screen=%dx%d — re-polling",
+				step.Selector.Describe(), info.Bounds.Width, info.Bounds.Height,
+				info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, sw, sh)
+			lastErr = fmt.Errorf("element rect not tappable (w=%d h=%d center=(%d,%d) screen=%dx%d)",
+				info.Bounds.Width, info.Bounds.Height,
+				info.Bounds.X+info.Bounds.Width/2, info.Bounds.Y+info.Bounds.Height/2, sw, sh)
+			time.Sleep(50 * time.Millisecond)
+			return nil, lastErr
+		}
+	}
+
+	// Post-tap verification candidates (all wired but
+	// NOT called — empirically none reliably distinguish
+	// "tap had effect" from "tap fired ripple only" on
+	// the React Navigation showcase app):
+	//   d.tapHadEffectViaWindowUpdate("")  // Maestro's isWindowUpdating
+	//   d.tapHadEffect()                   // element-presence check
+	// Both produce false positives (ripples count) and
+	// false negatives (buttons persist across screens).
+	return successResult("Tapped on element", info), nil
 }
 
 // tapPointInjectable reports whether a resolved tap point may be injected: the
@@ -594,7 +630,13 @@ func (d *Driver) assertVisible(step *flow.AssertVisibleStep) *core.CommandResult
 		return d.assertVisibleWithWebViewText(step)
 	}
 
-	_, info, err := d.findElementFastWithLazyRetry(step.Selector, step.IsOptional(), step.TimeoutMs)
+	var info *core.ElementInfo
+	var err error
+	if checksBySnapshot(step.Selector) {
+		info, err = d.findVisible(step.Selector, step.IsOptional(), step.TimeoutMs)
+	} else {
+		_, info, err = d.findElementFastWithLazyRetry(step.Selector, step.IsOptional(), step.TimeoutMs)
+	}
 	if err != nil {
 		err = d.notFoundOrCrash(err)
 		return errorResult(err, fmt.Sprintf("Element not visible: %v", err))
@@ -759,9 +801,19 @@ func (d *Driver) assertNotVisible(step *flow.AssertNotVisibleStep) *core.Command
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Millisecond)
 	pollInterval := 500 * time.Millisecond
+	bySnapshot := checksBySnapshot(step.Selector)
+	if bySnapshot {
+		pollInterval = snapshotPollGap
+	}
 
 	for {
-		_, info, err := d.findElementQuick(step.Selector, 0)
+		var info *core.ElementInfo
+		var err error
+		if bySnapshot {
+			info, err = d.findVisibleOnce(step.Selector)
+		} else {
+			_, info, err = d.findElementQuick(step.Selector, 0)
+		}
 		if err != nil || info == nil {
 			return successResult("Element is not visible", nil)
 		}
@@ -809,6 +861,28 @@ func (d *Driver) assertNotVisibleBrowser(sel flow.Selector, timeoutMs int) *core
 // ============================================================================
 // Input Commands
 // ============================================================================
+
+// focusWaitForTyping is how long inputText without a selector waits for a
+// field to take focus before typing blind. It returns as soon as a field has
+// focus. At 1s, duckduckgo's address bar, focused a little later after
+// onboarding, was typed into one key at a time: ~80ms a character, 3.4s
+// for a URL, where setting the focused field's text takes ~0.1s.
+const focusWaitForTyping = 3 * time.Second
+
+// waitForFocused polls for the focused element for up to wait, returning nil
+// when nothing takes focus in that time.
+func (d *Driver) waitForFocused(wait time.Duration) core.Element {
+	deadline := time.Now().Add(wait)
+	for {
+		if focused, err := d.findFocused(); err == nil && focused != nil {
+			return focused
+		}
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
 
 func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 	text := step.Text
@@ -905,8 +979,15 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 		// dragged a fragile focused=true selector-search fallback with it.
 		// This reintroduction is a single findFocused round-trip with a
 		// plain key-events fallback — no selector search.
+		//
+		// Focus can still be on its way when the step starts: an app that
+		// focuses its input a moment after a screen appears (duckduckgo's
+		// address bar after onboarding) reported nothing focused, the text
+		// went out as blind key events, and the first keystrokes arrived
+		// before the field did — "https://…" landed as "tps://…". Wait
+		// briefly for focus, as Maestro's settle-before-command does.
 		typed := false
-		if focused, err := d.findFocused(); err == nil && focused != nil {
+		if focused := d.waitForFocused(focusWaitForTyping); focused != nil {
 			before, _ := focused.Text()
 			if err := focused.Input(text); err == nil {
 				typed = true
@@ -916,6 +997,12 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 		if !typed {
 			if err := d.client.SendKeyActions(text); err != nil {
 				return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
+			}
+			// The key events went wherever focus landed. Read that field back
+			// so characters lost before it took focus are retyped; without a
+			// field to read, this path used to pass with no check at all.
+			if focused, err := d.findFocused(); err == nil && focused != nil {
+				typedInto = focused
 			}
 		}
 	}
@@ -1572,6 +1659,51 @@ func (d *Driver) swipeWithAbsoluteCoords(startX, startY, endX, endY, durationMs 
 // Navigation Commands
 // ============================================================================
 
+// Taps, key presses and copyTextFrom after a tap wait for the UI to settle,
+// as Maestro settles after every tap. Nothing else waits for them: a back
+// pressed while the tapped sheet was still closing was swallowed by it
+// (duckduckgo's "Save Password" → back never reached the page).
+// waitForTreeChange polls until the screen's content differs from before,
+// or wait runs out. Returns whether it changed.
+func (d *Driver) waitForTreeChange(before uint64, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		if h, err := d.client.TreeHash(); err == nil && h != before {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	logger.Debug("[devicelab] screen unchanged %v after openLink", wait)
+	return false
+}
+
+// Settle limits. The agent reads the tree back to back and calls it settled
+// once it has stayed the same for settleQuietMs. waitForIdleTimeout: 0 skips
+// settling; its value does not cap it (the default is 200ms, far below what a
+// screen change takes). Maestro accepts
+// two equal consecutive reads, and so fails where an app pauses before its
+// next dialog: duckduckgo shows "Close Autofill Dialog" a moment after "Save
+// Password", and a 200ms window pressed Back before it appeared.
+const (
+	openLinkChangeWait      = 3 * time.Second
+	openLinkSettleTimeoutMs = 5000
+	settleAfterTapTimeoutMs = 2000
+	settleQuietMs           = 500
+)
+
+// settle waits for the screen to stop changing, for at most maxMs; it is
+// off when waitForIdleTimeout is 0.
+func (d *Driver) settle(maxMs int, what string) {
+	if d.idleTimeoutSet && d.idleTimeoutMs == 0 {
+		return
+	}
+	if settled, err := d.client.WaitForSettle(maxMs, settleQuietMs); err != nil {
+		logger.Debug("[devicelab] settle after %s: %v", what, err)
+	} else if !settled {
+		logger.Debug("[devicelab] settle after %s: still changing after %dms", what, maxMs)
+	}
+}
+
 func (d *Driver) back(_ *flow.BackStep) *core.CommandResult {
 	if err := d.client.Back(); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to press back: %v", err))
@@ -1589,6 +1721,15 @@ func (d *Driver) pressKey(step *flow.PressKeyStep) *core.CommandResult {
 
 	if err := d.client.PressKeyCode(keyCode); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to press key: %v", err))
+	}
+
+	// Enter submits or navigates, and Maestro waits for the app to settle
+	// after a key press. Without it the next step read the screen Enter was
+	// about to replace: a `when: visible:` check 60ms later still saw
+	// duckduckgo's native input widget, and the tap it guarded then found
+	// nothing once the page had loaded.
+	if keyCode == uiautomator2.KeyCodeEnter && !d.isBrowserMode() {
+		d.settle(openLinkSettleTimeoutMs, "enter")
 	}
 
 	return successResult(fmt.Sprintf("Pressed key: %s", key), nil)
@@ -1653,7 +1794,7 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 			continue
 		}
 		if strings.ToLower(name) == "all" {
-			toGrant = append(toGrant, getAllPermissions()...)
+			toGrant = append(toGrant, d.declaredOf(appID, getAllPermissions())...)
 		} else {
 			toGrant = append(toGrant, resolvePermissionShortcut(name)...)
 		}
@@ -1679,6 +1820,108 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	return successResult(fmt.Sprintf("Launched app: %s", appID), nil)
 }
 
+// declaredOf keeps the permissions in perms that appID declares, as Maestro
+// grants "all" from the app's manifest. Undeclared ones cannot be granted
+// anyway, and asking for all 23 took ~0.7s on every launch. The app's list
+// is read once per run; when it cannot be read, perms is returned whole.
+func (d *Driver) declaredOf(appID string, perms []string) []string {
+	declared, ok := d.declaredPerms[appID]
+	if !ok {
+		declared = d.readDeclaredPermissions(appID)
+		if d.declaredPerms == nil {
+			d.declaredPerms = map[string]map[string]bool{}
+		}
+		d.declaredPerms[appID] = declared
+	}
+	if len(declared) == 0 {
+		return perms
+	}
+	var out []string
+	for _, p := range perms {
+		if declared[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// readDeclaredPermissions returns the permissions appID requests, from the
+// "requested permissions:" section of dumpsys package, or nil.
+func (d *Driver) readDeclaredPermissions(appID string) map[string]bool {
+	if d.device == nil {
+		return nil
+	}
+	out, err := d.device.Shell("dumpsys package " + appID)
+	if err != nil {
+		return nil
+	}
+	return parseRequestedPermissions(out)
+}
+
+// parseRequestedPermissions reads the names listed under "requested
+// permissions:" in dumpsys package output, up to the next section.
+func parseRequestedPermissions(dump string) map[string]bool {
+	perms := map[string]bool{}
+	in := false
+	indent := 0
+	for _, line := range strings.Split(dump, "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+		lead := len(line) - len(strings.TrimLeft(line, " "))
+		if trimmed == "requested permissions:" {
+			in, indent = true, lead
+			continue
+		}
+		if !in {
+			continue
+		}
+		if trimmed == "" || lead <= indent {
+			break
+		}
+		name := strings.TrimSpace(strings.SplitN(trimmed, ":", 2)[0])
+		if name != "" {
+			perms[name] = true
+		}
+	}
+	if len(perms) == 0 {
+		return nil
+	}
+	return perms
+}
+
+// launchWaitTimeoutSec bounds how long `am start-activity -W` may wait.
+const launchWaitTimeoutSec = 30
+
+// launchShellTimeout bounds each shell call of the launch fallback on the
+// host, beyond the device-side timeout: a run once sat ten minutes in it.
+const launchShellTimeout = 45 * time.Second
+
+// shellBounded runs a shell command with a deadline, through the device's
+// ShellTimeout when it has one (it kills the stuck adb), else by abandoning
+// the call.
+func (d *Driver) shellBounded(cmd string, timeout time.Duration) (string, error) {
+	if s, ok := d.device.(interface {
+		ShellTimeout(cmd string, timeout time.Duration) (string, error)
+	}); ok {
+		return s.ShellTimeout(cmd, timeout)
+	}
+	type result struct {
+		out string
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		out, err := d.device.Shell(cmd)
+		ch <- result{out, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.out, r.err
+	case <-time.After(timeout):
+		return "", fmt.Errorf("shell timed out after %v: %s", timeout, cmd)
+	}
+}
+
 // launchAppViaShell launches an app using ADB shell commands.
 func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{}) *core.CommandResult {
 	apiLevel := d.getAPILevel()
@@ -1700,7 +1943,12 @@ func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{
 
 	amCmd := "am start"
 	if apiLevel >= 26 {
-		amCmd = "am start-activity"
+		// -W waits for the launch to report complete, and when that report
+		// never comes it waits forever: a run hung 90 minutes here after
+		// duckduckgo's launch intent briefly failed to resolve. Bound the
+		// wait on the device (toybox timeout, API 26+); the launch is already
+		// dispatched, and the next step's find decides whether it came up.
+		amCmd = fmt.Sprintf("timeout %d am start-activity", launchWaitTimeoutSec)
 	}
 
 	cmd := fmt.Sprintf("%s -W -n %s -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -f 0x10200000",
@@ -1731,14 +1979,19 @@ func (d *Driver) launchAppViaShell(appID string, arguments map[string]interface{
 		}
 	}
 
-	output, err := d.device.Shell(cmd)
+	output, err := d.shellBounded(cmd, launchShellTimeout)
+	if err != nil && strings.Contains(output, "Starting: Intent") && !strings.Contains(output, "Error") {
+		// The intent went out and only the -W wait timed out.
+		logger.Warn("launchApp: %s did not report the launch complete within %ds — continuing", appID, launchWaitTimeoutSec)
+		return successResult(fmt.Sprintf("Launched app: %s", appID), nil)
+	}
 	if err != nil || strings.Contains(output, "Error") {
 		if strings.Contains(output, "does not exist") || strings.Contains(output, "ClassNotFoundException") {
 			dotActivity := d.addDotPrefix(activity)
 			if dotActivity != activity {
 				logger.Info("launchApp: retrying with dot-prefixed activity: %s", dotActivity)
 				retryCmd := strings.Replace(cmd, activity, dotActivity, 1)
-				if output2, err2 := d.device.Shell(retryCmd); err2 == nil && !strings.Contains(output2, "Error") {
+				if output2, err2 := d.shellBounded(retryCmd, launchShellTimeout); err2 == nil && !strings.Contains(output2, "Error") {
 					return successResult(fmt.Sprintf("Launched app: %s", appID), nil)
 				}
 			}
@@ -1763,7 +2016,7 @@ func (d *Driver) getAPILevel() int {
 	if d.cachedAPILevel > 0 {
 		return d.cachedAPILevel
 	}
-	output, err := d.device.Shell("getprop ro.build.version.sdk")
+	output, err := d.shellBounded("getprop ro.build.version.sdk", launchShellTimeout)
 	if err != nil {
 		return 24
 	}
@@ -1797,7 +2050,7 @@ func (d *Driver) resolveLauncherActivityCached(appID string, apiLevel int) (stri
 func (d *Driver) resolveLauncherActivity(appID string, apiLevel int) (string, error) {
 	if apiLevel >= 24 {
 		resolveCmd := fmt.Sprintf("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER %s | tail -n 1", appID)
-		output, err := d.device.Shell(resolveCmd)
+		output, err := d.shellBounded(resolveCmd, launchShellTimeout)
 		if err == nil {
 			activity := strings.TrimSpace(output)
 			if activity != "" &&
@@ -1815,7 +2068,7 @@ func (d *Driver) resolveLauncherActivity(appID string, apiLevel int) (string, er
 // launchWithMonkey launches an app using the monkey command.
 func (d *Driver) launchWithMonkey(appID string) *core.CommandResult {
 	monkeyCmd := fmt.Sprintf("monkey -p %s -c android.intent.category.LAUNCHER 1", appID)
-	output, err := d.device.Shell(monkeyCmd)
+	output, err := d.shellBounded(monkeyCmd, launchShellTimeout)
 	if err != nil || strings.Contains(output, "monkey aborted") {
 		errMsg := fmt.Sprintf("launchApp: all launch methods failed for '%s'. "+
 			"The app may not be installed or has no launcher activity. "+
@@ -1843,7 +2096,7 @@ func (d *Driver) addDotPrefix(activity string) string {
 
 // resolveLauncherFromDumpsys parses `dumpsys package` output to find the MAIN/LAUNCHER activity.
 func (d *Driver) resolveLauncherFromDumpsys(appID string) (string, error) {
-	output, err := d.device.Shell(fmt.Sprintf("dumpsys package %s", appID))
+	output, err := d.shellBounded(fmt.Sprintf("dumpsys package %s", appID), launchShellTimeout)
 	if err != nil {
 		return "", fmt.Errorf("dumpsys failed for %s: %w", appID, err)
 	}
@@ -1940,7 +2193,11 @@ func (d *Driver) killApp(step *flow.KillAppStep) *core.CommandResult {
 		return errorResult(fmt.Errorf("device not configured"), "killApp requires device access")
 	}
 
-	if _, err := d.device.Shell("am force-stop " + appID); err != nil {
+	// killApp is a system-initiated process death, as in Maestro (`am kill`):
+	// the app keeps its saved state and restores it on the next launch.
+	// force-stop is stopApp; using it here lost duckduckgo's open tab after
+	// a restart. Like Maestro, it only kills an app that is in the background.
+	if _, err := d.device.Shell("am kill " + appID); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to kill app: %v", err))
 	}
 
@@ -2187,6 +2444,7 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 		cmd = fmt.Sprintf("am start -a android.intent.action.VIEW -d %s", quoted)
 	}
 
+	beforeHash, beforeErr := d.client.TreeHash()
 	if _, err := d.device.Shell(cmd); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to open link: %v", err))
 	}
@@ -2204,6 +2462,20 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 
 	if step.AutoVerify != nil && *step.AutoVerify {
 		time.Sleep(2 * time.Second)
+	}
+
+	// Maestro waits for the app to settle after opening a link. Without it the
+	// next step reads the screen the link has not replaced yet: a copyTextFrom
+	// on duckduckgo's address bar copied the "Search" placeholder, then the
+	// loading URL, instead of the query the results page shows.
+	if !d.isBrowserMode() {
+		// The app may take a moment to act on the link, and until it does
+		// the screen is still and reads as settled: duckduckgo's address bar
+		// still said "Search". Wait for the screen to change first.
+		if beforeErr == nil {
+			d.waitForTreeChange(beforeHash, openLinkChangeWait)
+		}
+		d.settle(openLinkSettleTimeoutMs, "openLink")
 	}
 
 	return successResult(fmt.Sprintf("Opened link: %s", link), nil)
@@ -2414,7 +2686,7 @@ func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
 			)
 		default:
 			if waitingForVisible {
-				_, info, err := d.findElementOnce(*step.Visible)
+				info, err := d.findOnceForWait(*step.Visible)
 				if err == nil && info != nil {
 					return successResult("Element is now visible", info)
 				}
@@ -2426,13 +2698,26 @@ func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
 					}
 				}
 			} else {
-				_, info, err := d.findElementOnce(*step.NotVisible)
+				info, err := d.findOnceForWait(*step.NotVisible)
 				if err != nil || info == nil {
 					return successResult("Element is no longer visible", nil)
 				}
 			}
+			if checksBySnapshot(*selector) {
+				time.Sleep(snapshotPollGap)
+			}
 		}
 	}
+}
+
+// findOnceForWait is one extendedWaitUntil look: a whole-screen read when the
+// selector allows it, else the per-form finds.
+func (d *Driver) findOnceForWait(sel flow.Selector) (*core.ElementInfo, error) {
+	if checksBySnapshot(sel) {
+		return d.findVisibleOnce(sel)
+	}
+	_, info, err := d.findElementOnce(sel)
+	return info, err
 }
 
 func (d *Driver) waitForAnimationToEnd(step *flow.WaitForAnimationToEndStep) *core.CommandResult {

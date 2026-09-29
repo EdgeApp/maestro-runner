@@ -71,7 +71,7 @@ func main() {
 `Platform` and `Driver` together select how the device is driven. The valid `Driver` values per platform match the CLI's `--driver` flag:
 
 - **Android:** `uiautomator2` (default), `devicelab`, or `appium`.
-- **iOS:** `wda` (WebDriverAgent) or `devicelab` (the native runner). Both need `TeamID` set, on simulator as well as device.
+- **iOS:** `wda` (WebDriverAgent; needs `TeamID` set, on simulator as well as device) or `devicelab` (the prebuilt devicelab iOS agent, simulators only; no `TeamID`). `devicelab-legacy` selects the previous devicelab runner, kept for comparison.
 - **Web:** leave `Driver` empty; set `Headed`, `Browser`, and `WindowSize` on the config instead.
 
 For Appium, set `AppiumURL` and either `CapsFile` or a parsed `Capabilities` map.

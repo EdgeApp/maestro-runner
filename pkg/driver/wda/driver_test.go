@@ -1116,7 +1116,7 @@ func mockWDAServerWithScrollElements(foundAfterScrolls int) *httptest.Server {
 		path := r.URL.Path
 
 		// Track swipe/drag calls (used by scroll)
-		if strings.Contains(path, "/wda/dragfromtoforduration") && r.Method == "POST" {
+		if strings.Contains(path, "/actions") && r.Method == "POST" {
 			scrollCount++
 			jsonResponse(w, map[string]interface{}{"status": 0})
 			return
@@ -3009,7 +3009,7 @@ func TestSetOrientationError(t *testing.T) {
 func TestSwipeWithCoordinateError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/wda/dragfromtoforduration") {
+		if strings.Contains(r.URL.Path, "/actions") {
 			jsonResponse(w, map[string]interface{}{
 				"value": map[string]interface{}{
 					"error":   "swipe failed",
@@ -5190,7 +5190,7 @@ func TestScrollSwipeError(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(r.URL.Path, "/dragfromtoforduration") {
+		if strings.Contains(r.URL.Path, "/actions") {
 			jsonResponse(w, map[string]interface{}{
 				"value": map[string]interface{}{"error": "swipe failed"},
 			})
@@ -5245,7 +5245,7 @@ func TestSwipeError(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(r.URL.Path, "/dragfromtoforduration") {
+		if strings.Contains(r.URL.Path, "/actions") {
 			jsonResponse(w, map[string]interface{}{
 				"value": map[string]interface{}{"error": "drag failed"},
 			})
@@ -5446,7 +5446,7 @@ func TestScrollUntilVisibleMaxScrolls(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(r.URL.Path, "/dragfromtoforduration") {
+		if strings.Contains(r.URL.Path, "/actions") {
 			scrollCount++
 			jsonResponse(w, map[string]interface{}{"status": 0})
 			return
@@ -5721,7 +5721,7 @@ func TestScrollUntilVisibleWithTimeoutMs(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(r.URL.Path, "/dragfromtoforduration") {
+		if strings.Contains(r.URL.Path, "/actions") {
 			scrollCount++
 			jsonResponse(w, map[string]interface{}{"status": 0})
 			return

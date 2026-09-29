@@ -27,6 +27,62 @@ type Config struct {
 
 	// Driver settings
 	WaitForIdleTimeout int `yaml:"waitForIdleTimeout"` // Wait for device idle in ms (0 = disabled, default 200)
+
+	// Per-platform options, Maestro's `platform:` map
+	// (platform: {android: {disableAnimations: true}}). `platform: android`
+	// still sets Platform above.
+	PlatformSettings PlatformSettings `yaml:"-"`
+}
+
+// PlatformSettings holds Maestro's per-platform workspace options.
+type PlatformSettings struct {
+	Android PlatformOptions `yaml:"android"`
+	IOS     PlatformOptions `yaml:"ios"`
+}
+
+// PlatformOptions are the options Maestro supports for one platform.
+type PlatformOptions struct {
+	DisableAnimations bool `yaml:"disableAnimations"`
+}
+
+// DisableAnimations reports whether the workspace turns animations off for
+// the given platform ("android" or "ios").
+func (c *Config) DisableAnimations(platform string) bool {
+	if c == nil {
+		return false
+	}
+	switch platform {
+	case "android":
+		return c.PlatformSettings.Android.DisableAnimations
+	case "ios":
+		return c.PlatformSettings.IOS.DisableAnimations
+	}
+	return false
+}
+
+// UnmarshalYAML accepts `platform:` both as our target-platform string and
+// as Maestro's map of per-platform options.
+func (c *Config) UnmarshalYAML(node *yaml.Node) error {
+	var settings *yaml.Node
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == "platform" && node.Content[i+1].Kind == yaml.MappingNode {
+				settings = node.Content[i+1]
+				content := make([]*yaml.Node, 0, len(node.Content)-2)
+				content = append(content, node.Content[:i]...)
+				node.Content = append(content, node.Content[i+2:]...)
+				break
+			}
+		}
+	}
+	type plain Config
+	if err := node.Decode((*plain)(c)); err != nil {
+		return err
+	}
+	if settings != nil {
+		return settings.Decode(&c.PlatformSettings)
+	}
+	return nil
 }
 
 // Load loads configuration from a file.

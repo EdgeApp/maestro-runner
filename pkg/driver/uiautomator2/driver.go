@@ -71,6 +71,8 @@ type Driver struct {
 	client UIA2Client
 	info   *core.PlatformInfo
 	device ShellExecutor // for ADB commands (launchApp, stopApp, clearState)
+	// Animation scales saved while disableAnimations is on
+	animations core.AndroidAnimations
 
 	// Parent context for element-finding operations (nil = context.Background())
 	ctx context.Context
@@ -469,15 +471,20 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 
 	if sel.Text != "" {
 		if looksLikeRegex(sel.Text) {
-			pattern := "(?s)" + escapeUIAutomatorString(sel.Text)
-			strategies = append(strategies, LocatorStrategy{
-				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().textMatches("` + pattern + `").clickable(true)` + stateFilters,
-			})
-			strategies = append(strategies, LocatorStrategy{
-				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().descriptionMatches("` + pattern + `").clickable(true)` + stateFilters,
-			})
+			// Case as written first, then ignoring case, as Maestro matches
+			// (IGNORE_CASE): the ignore-case pass finds "Let's get started!"
+			// for `(let's get started!|...)`, and the first pass still prefers
+			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
+			for _, pattern := range []string{"(?s)" + escapeUIAutomatorString(sel.Text), "(?is)" + escapeUIAutomatorString(sel.Text)} {
+				strategies = append(strategies, LocatorStrategy{
+					Strategy: uiautomator2.StrategyUIAutomator,
+					Value:    `new UiSelector().textMatches("` + pattern + `").clickable(true)` + stateFilters,
+				})
+				strategies = append(strategies, LocatorStrategy{
+					Strategy: uiautomator2.StrategyUIAutomator,
+					Value:    `new UiSelector().descriptionMatches("` + pattern + `").clickable(true)` + stateFilters,
+				})
+			}
 		} else {
 			escaped := escapeUIAutomatorString(sel.Text)
 			strategies = append(strategies, LocatorStrategy{
@@ -1181,7 +1188,12 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 		escaped := escapeUIAutomatorString(sel.ID)
 		idTiers = [][]string{
 			{`.resourceId("` + escaped + `")`},
-			{`.resourceIdMatches(".*` + escaped + `.*")`},
+			// Grouped, so an id written as a regex alternation
+			// ("omnibarTextInput|inputField") keeps both alternatives inside
+			// the wildcards. Ungrouped, `|` split the whole pattern into
+			// ".*omnibarTextInput" or "inputField.*", and neither matched a
+			// full resource id like "com.app:id/inputField".
+			{`.resourceIdMatches("(?i).*(?:` + escaped + `).*")`},
 		}
 	}
 
@@ -1191,9 +1203,14 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 	var textTiers [][]string
 	if sel.Text != "" {
 		if looksLikeRegex(sel.Text) {
-			pattern := "(?s)" + escapeUIAutomatorString(sel.Text)
+			// Case as written first, then ignoring case, as Maestro matches
+			// (IGNORE_CASE): the ignore-case pass finds "Let's get started!"
+			// for `(let's get started!|...)`, and the first pass still prefers
+			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
+			pattern := escapeUIAutomatorString(sel.Text)
 			textTiers = [][]string{
-				{`.textMatches("` + pattern + `")`, `.descriptionMatches("` + pattern + `")`},
+				{`.textMatches("(?s)` + pattern + `")`, `.descriptionMatches("(?s)` + pattern + `")`},
+				{`.textMatches("(?is)` + pattern + `")`, `.descriptionMatches("(?is)` + pattern + `")`},
 			}
 		} else {
 			escaped := escapeUIAutomatorString(sel.Text)
@@ -1352,4 +1369,13 @@ func successResult(msg string, elem *core.ElementInfo) *core.CommandResult {
 
 func errorResult(err error, msg string) *core.CommandResult {
 	return core.ErrorResult(err, msg)
+}
+
+// SetAnimationsDisabled switches the device's animation scales off, or puts
+// back the ones saved when they were switched off (disableAnimations).
+func (d *Driver) SetAnimationsDisabled(disabled bool) error {
+	if d.device == nil {
+		return fmt.Errorf("disableAnimations needs device shell access")
+	}
+	return d.animations.Set(d.device, disabled)
 }

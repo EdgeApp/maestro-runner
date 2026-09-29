@@ -71,6 +71,7 @@ type Config struct {
 	Timeout            int               `yaml:"timeout"`            // Flow timeout in ms
 	CommandTimeout     int               `yaml:"commandTimeout"`     // Default timeout for all commands in ms (overrides driver default)
 	WaitForIdleTimeout *int              `yaml:"waitForIdleTimeout"` // Wait for device idle in ms (nil = use global, 0 = disabled)
+	DisableAnimations  *bool             `yaml:"disableAnimations"`  // Switch device animations off for this flow (nil = use global)
 	TypingFrequency    *int              `yaml:"typingFrequency"`    // WDA typing speed in keys/sec (nil = use global, 0 = disabled)
 	StepDelay          *int              `yaml:"stepDelay"`          // Pause between top-level steps in ms (nil = use global, 0 = none)
 	Properties         map[string]string `yaml:"properties"`         // Custom key/values emitted as JUnit testcase properties (#84)

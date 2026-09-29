@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
@@ -18,37 +19,60 @@ import (
 // envVarPattern matches ALL_CAPS identifiers that look like env variables
 var envVarPattern = regexp.MustCompile(`\b([A-Z][A-Z0-9_]{2,})\b`)
 
-// defaultConditionTimeoutMs is the budget for a `when:`/`while:` condition's
-// visible/notVisible check when the condition (or its selector) sets no explicit
-// timeout. It is deliberately short: a condition that isn't met should resolve
-// quickly rather than blocking on the 7s optional-find timeout. Vanilla Maestro
-// is effectively fast here too (it shrinks the budget by time already elapsed
-// since the last interaction). A present element still resolves immediately;
-// this only bounds how long an unmet condition waits. Tunable via
-// SetConditionTimeout / the --condition-timeout flag, and overridable per
-// condition with `timeout:`. (#110)
-const defaultConditionTimeoutMs = 1000
+// A `when:`/`while:` visible/notVisible check with no timeout of its own gets
+// Maestro's budget: the 7s optional-find timeout less the time since the last
+// step ended, so a check right after a slow step resolves quickly while one
+// right after a quick step still waits for UI that is on its way (duckduckgo
+// shows its saved-login prompt more than 1s after the page loads). The budget
+// never drops below minConditionTimeoutMs. A present element resolves at
+// once either way. --condition-timeout / SetConditionTimeout sets a fixed
+// budget instead, and `timeout:` overrides per condition. (#110)
+const (
+	maestroConditionTimeoutMs = 7000
+	minConditionTimeoutMs     = 1000
+)
 
 // ScriptEngine handles JavaScript execution and variable management.
 type ScriptEngine struct {
 	js                 *jsengine.Engine
 	variables          map[string]string
 	flowDir            string // Directory of current flow (for resolving relative paths)
-	conditionTimeoutMs int    // default timeout for when/while condition checks
+	conditionTimeoutMs int    // fixed timeout for when/while condition checks; 0 = Maestro's budget
+	lastInteraction    time.Time
 }
 
 // NewScriptEngine creates a new script engine.
 func NewScriptEngine() *ScriptEngine {
 	return &ScriptEngine{
-		js:                 jsengine.New(),
-		variables:          make(map[string]string),
-		conditionTimeoutMs: defaultConditionTimeoutMs,
+		js:        jsengine.New(),
+		variables: make(map[string]string),
 	}
 }
 
-// SetConditionTimeout overrides the default timeout (ms) used for `when:`/
-// `while:` condition checks that don't specify their own. A non-positive value
-// is ignored (keeps the current default).
+// MarkInteraction records that a step just ended, the point Maestro measures
+// a condition's budget from.
+func (se *ScriptEngine) MarkInteraction() {
+	se.lastInteraction = time.Now()
+}
+
+// conditionBudgetMs is the timeout for a when/while check with none of its own.
+func (se *ScriptEngine) conditionBudgetMs() int {
+	if se.conditionTimeoutMs > 0 {
+		return se.conditionTimeoutMs
+	}
+	budget := maestroConditionTimeoutMs
+	if !se.lastInteraction.IsZero() {
+		budget -= int(time.Since(se.lastInteraction).Milliseconds())
+	}
+	if budget < minConditionTimeoutMs {
+		return minConditionTimeoutMs
+	}
+	return budget
+}
+
+// SetConditionTimeout sets a fixed timeout (ms) for `when:`/`while:` condition
+// checks that don't specify their own. A non-positive value keeps Maestro's
+// budget.
 func (se *ScriptEngine) SetConditionTimeout(ms int) {
 	if ms > 0 {
 		se.conditionTimeoutMs = ms
@@ -584,7 +608,7 @@ func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition,
 	if cond.Visible != nil {
 		visibleStep := &flow.AssertVisibleStep{Selector: *cond.Visible}
 		// when/while: an unmet condition should fail fast (#110).
-		visibleStep.TimeoutMs = conditionTimeout(cond, cond.Visible, se.conditionTimeoutMs)
+		visibleStep.TimeoutMs = conditionTimeout(cond, cond.Visible, se.conditionBudgetMs())
 		visibleStep.Optional = true
 		result := driver.Execute(visibleStep)
 		if !result.Success {
@@ -595,7 +619,7 @@ func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition,
 	// Check notVisible
 	if cond.NotVisible != nil {
 		notVisibleStep := &flow.AssertNotVisibleStep{Selector: *cond.NotVisible}
-		notVisibleStep.TimeoutMs = conditionTimeout(cond, cond.NotVisible, se.conditionTimeoutMs)
+		notVisibleStep.TimeoutMs = conditionTimeout(cond, cond.NotVisible, se.conditionBudgetMs())
 		notVisibleStep.Optional = true
 		result := driver.Execute(notVisibleStep)
 		if !result.Success {
@@ -618,7 +642,7 @@ func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition,
 // Priority: 1) Condition.Timeout, 2) Selector.Timeout, 3) the caller's fallback.
 // A fallback of 0 lets the driver apply its OptionalFindTimeout (7s) — used for
 // assertCondition, where an asserted element should be waited for. The when/
-// while path passes the short conditionTimeoutMs so an unmet condition fails
+// while path passes conditionBudgetMs() so an unmet condition fails
 // fast instead of blocking 7s (#110).
 func conditionTimeout(cond flow.Condition, sel *flow.Selector, fallback int) int {
 	if cond.Timeout > 0 {

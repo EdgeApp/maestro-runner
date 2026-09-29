@@ -38,6 +38,7 @@ type DeviceLabClient interface {
 	// FindAndClickChecked additionally hit-tests the tap point when hitTest is
 	// set, returning what covered it when a tap is refused.
 	FindAndClickChecked(strategy, selector string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, error)
+	FindFirstAndClickChecked(strategiesAndSelectors []string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, int, error)
 	ActiveElement() (*uiautomator2.Element, error)
 
 	// Timeouts
@@ -63,6 +64,7 @@ type DeviceLabClient interface {
 	// Device state
 	Screenshot() ([]byte, error)
 	Source() (string, error)
+	Snapshot(waitForIdleMs int) (string, error)
 	GetOrientation() (string, error)
 	SetOrientation(orientation string) error
 	GetClipboard() (string, error)
@@ -102,6 +104,8 @@ type Driver struct {
 	client DeviceLabClient
 	info   *core.PlatformInfo
 	device ShellExecutor // for ADB commands (fallback)
+	// Animation scales saved while disableAnimations is on
+	animations core.AndroidAnimations
 
 	// currentAppID is the app the flow last launched, remembered so a
 	// mid-flow death can be explained rather than surfacing as "not found".
@@ -116,6 +120,19 @@ type Driver struct {
 
 	// Keyboard auto-dismiss: set after inputText/inputRandom, checked on next tap/assert
 	lastStepWasInput bool
+
+	// Set after a successful tap; back/pressKey settle first when it is set
+	lastStepWasTap bool
+
+	// Permissions each app declares, read once per run (nil: unreadable)
+	declaredPerms map[string]map[string]bool
+
+	// Set when the agent has no Gesture.findFirstAndClick (older build)
+	noFindFirstAndClick bool
+
+	// waitForIdleTimeout as last set; 0 turns the settles off
+	idleTimeoutMs  int
+	idleTimeoutSet bool
 
 	// Text of the last WebView label a tap targeted, used to find and drive the
 	// matching cross-origin iframe input over CDP when the following inputText
@@ -146,6 +163,9 @@ type Driver struct {
 	// native finding meanwhile.
 	lastWebViewConnectFail   time.Time
 	lastWebViewConnectFailSk string
+	// Consecutive connect failures on lastWebViewConnectFailSk; the backoff
+	// grows with it (webViewRepeatBackoff).
+	lastWebViewConnectFails int
 
 	// Lazy retry state: each successful tap captures the pre-tap tree hash
 	// + selector + time. If the NEXT element-based command can't find its
@@ -494,6 +514,7 @@ func (d *Driver) SetWaitForIdleTimeout(ms int) error {
 	if ms < 0 {
 		ms = 0
 	}
+	d.idleTimeoutMs, d.idleTimeoutSet = ms, true
 	return d.client.SetAppiumSettings(map[string]interface{}{
 		"waitForIdleTimeout": ms,
 	})
@@ -502,6 +523,14 @@ func (d *Driver) SetWaitForIdleTimeout(ms int) error {
 // Execute runs a single step and returns the result.
 func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	start := time.Now()
+
+	// An action right after a tap waits for the tap's UI to settle first: a
+	// tap on duckduckgo's menu button while the previous menu was still
+	// closing did nothing. Asserts and checks do not wait: they poll, and an
+	// element on both screens is a correct pass either way.
+	if d.lastStepWasTap && actsOnScreen(step) {
+		d.settle(settleAfterTapTimeoutMs, "tap")
+	}
 
 	var result *core.CommandResult
 	switch s := step.(type) {
@@ -637,6 +666,12 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	default:
 		d.lastStepWasInput = false
 	}
+	switch step.(type) {
+	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep:
+		d.lastStepWasTap = result.Success
+	default:
+		d.lastStepWasTap = false
+	}
 
 	result.Duration = time.Since(start)
 	return result
@@ -647,11 +682,15 @@ func (d *Driver) Screenshot() ([]byte, error) {
 	return d.client.Screenshot()
 }
 
-// Hierarchy captures the UI hierarchy as XML.
+// Hierarchy captures the UI hierarchy as XML: every window, as the checks
+// read it. The active window alone came back empty while duckduckgo's
+// suggestions sheet (another window) was up, so the report showed nothing.
 func (d *Driver) Hierarchy() ([]byte, error) {
-	source, err := d.client.Source()
+	source, err := d.client.Snapshot(0)
 	if err != nil {
-		return nil, err
+		if source, err = d.client.Source(); err != nil {
+			return nil, err
+		}
 	}
 	return []byte(source), nil
 }
@@ -697,6 +736,7 @@ func (d *Driver) ensureWebViewConnection() {
 		d.knownCDPType = ""                    // Clear browser mode when CDP goes away
 		d.lastWebViewConnectFail = time.Time{} // reset backoff — socket is gone
 		d.lastWebViewConnectFailSk = ""
+		d.lastWebViewConnectFails = 0
 		return
 	}
 
@@ -722,9 +762,17 @@ func (d *Driver) ensureWebViewConnection() {
 		if inWebViewConnectBackoff(cdpInfo.Socket, d.lastWebViewConnectFailSk, d.lastWebViewConnectFail, time.Now()) {
 			return
 		}
+		if cdpInfo.Socket == d.lastWebViewConnectFailSk &&
+			time.Since(d.lastWebViewConnectFail) < webViewRepeatBackoff(d.lastWebViewConnectFails) {
+			return
+		}
 		logger.Info("[cdp:3-connection] CDP socket available, initiating connection to %s (type=%s)", cdpInfo.Socket, cdpType)
 		if err := d.webView.connect(cdpInfo, cdpType); err != nil {
 			logger.Info("[cdp:3-connection] connect failed: %v (socket=%s)", err, cdpInfo.Socket)
+			if cdpInfo.Socket != d.lastWebViewConnectFailSk {
+				d.lastWebViewConnectFails = 0
+			}
+			d.lastWebViewConnectFails++
 			d.lastWebViewConnectFail = time.Now()
 			d.lastWebViewConnectFailSk = cdpInfo.Socket
 			return
@@ -732,6 +780,7 @@ func (d *Driver) ensureWebViewConnection() {
 		// Connected — clear any backoff state.
 		d.lastWebViewConnectFail = time.Time{}
 		d.lastWebViewConnectFailSk = ""
+		d.lastWebViewConnectFails = 0
 	}
 }
 
@@ -740,6 +789,26 @@ func (d *Driver) ensureWebViewConnection() {
 // so a stalled/unreachable devtools endpoint can't add the full connect
 // timeout to every command (mirrors Maestro's MA-4119 bound).
 const webViewConnectBackoff = 5 * time.Second
+
+// webViewRepeatBackoff is the wait after `failures` consecutive failed
+// connects to the same socket: webViewConnectBackoff, doubling per failure,
+// capped at a minute. A socket that keeps failing (RNTester leaves a
+// devtools socket with no pages; each attempt timed out after 10s) otherwise
+// took most of every scrollUntilVisible round, and the step ran out of time
+// with its element on screen.
+func webViewRepeatBackoff(failures int) time.Duration {
+	if failures <= 1 {
+		return webViewConnectBackoff
+	}
+	wait := webViewConnectBackoff
+	for i := 1; i < failures && wait < time.Minute; i++ {
+		wait *= 2
+	}
+	if wait > time.Minute {
+		wait = time.Minute
+	}
+	return wait
+}
 
 // inWebViewConnectBackoff reports whether a connect to socket should be skipped
 // because the same socket failed to connect within webViewConnectBackoff of now.
@@ -928,6 +997,7 @@ func (d *Driver) findElementFast(sel flow.Selector, optional bool, stepTimeoutMs
 // lazyRetryMax times. Falls through to the standard timeout if hash has
 // changed (real "element not visible") or if no recent tap is recorded.
 func (d *Driver) findElementFastWithLazyRetry(sel flow.Selector, optional bool, stepTimeoutMs int) (*uiautomator2.Element, *core.ElementInfo, error) {
+	start := time.Now()
 	logger.Info("[devicelab] findElementFastWithLazyRetry start for %s (lastTapTime zero=%v)", sel.Describe(), d.lastTapTime.IsZero())
 	if elem, info, err := d.findElementFast(sel, optional, lazyRetryProbeMs); err == nil {
 		return elem, info, nil
@@ -940,13 +1010,27 @@ func (d *Driver) findElementFastWithLazyRetry(sel flow.Selector, optional bool, 
 		}
 	}
 	logger.Info("[devicelab] findElementFastWithLazyRetry falling through to full timeout for %s", sel.Describe())
-	return d.findElementFast(sel, optional, stepTimeoutMs)
+	return d.findElementFast(sel, optional, d.remainingTimeoutMs(start, optional, stepTimeoutMs))
+}
+
+// remainingTimeoutMs is what is left of a find's timeout after the probes
+// that ran since start. The probes count against it: starting the full
+// timeout after them made a 7s when: check take 10-12s on duckduckgo's fire
+// dialog. At least 1ms is left, so the find still looks once (0 would mean
+// the default timeout).
+func (d *Driver) remainingTimeoutMs(start time.Time, optional bool, stepTimeoutMs int) int {
+	left := int(d.calculateTimeout(optional, stepTimeoutMs).Milliseconds() - time.Since(start).Milliseconds())
+	if left < 1 {
+		return 1
+	}
+	return left
 }
 
 // findElementWithLazyRetry is the same wrapper for the standard (3-call)
 // findElement path. Used by inputText, where the next step actually consumes
 // the element (vs. assertVisible which just checks visibility).
 func (d *Driver) findElementWithLazyRetry(sel flow.Selector, optional bool, stepTimeoutMs int) (*uiautomator2.Element, *core.ElementInfo, error) {
+	start := time.Now()
 	if elem, info, err := d.findElement(sel, optional, lazyRetryProbeMs); err == nil {
 		return elem, info, nil
 	}
@@ -956,7 +1040,7 @@ func (d *Driver) findElementWithLazyRetry(sel flow.Selector, optional bool, step
 			return elem, info, nil
 		}
 	}
-	return d.findElement(sel, optional, stepTimeoutMs)
+	return d.findElement(sel, optional, d.remainingTimeoutMs(start, optional, stepTimeoutMs))
 }
 
 // findElementForTap finds an element for tap commands.
@@ -1069,11 +1153,13 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 
 	if sel.Text != "" {
 		escaped := escapeUIAutomatorString(sel.Text)
-		// Case-sensitive text/description/hint first, then case-insensitive fallback.
+		// The whole text first, as Maestro matches it, then case-sensitive
+		// text/description/hint containing it, then a case-insensitive
+		// fallback. The substring passes stay for tab labels with counts
+		// ("Inbox" for "Inbox (3)"); they only run when nothing matches whole.
 		// hintContains is a DeviceLab-agent extension — matches EditText android:hint
 		// placeholder so "tapOn: 'Email'" finds an empty field by its hint text.
-		// (Tried exact-match-first à la Maestro but it broke too many flows
-		// where users expect substring matching for tab labels with counts.)
+		strategies = append(strategies, exactTextStrategies(sel.Text, ".clickable(true)"+stateFilters)...)
 		strategies = append(strategies, LocatorStrategy{
 			Strategy: uiautomator2.StrategyUIAutomator,
 			Value:    `new UiSelector().textContains("` + escaped + `").clickable(true)` + stateFilters,
@@ -1106,16 +1192,25 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 		// the literal string ".*For You.*" instead of "anything around For You".
 		if looksLikeRegex(sel.Text) {
 			regexEscaped := escapeUIAutomatorString(sel.Text)
-			pattern := "(?s)" + regexEscaped
-			strategies = append(strategies, LocatorStrategy{
-				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().textMatches("` + pattern + `").clickable(true)` + stateFilters,
-			})
-			strategies = append(strategies, LocatorStrategy{
-				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().descriptionMatches("` + pattern + `").clickable(true)` + stateFilters,
-			})
+			// Case as written first, then ignoring case, as Maestro matches
+			// (IGNORE_CASE): the ignore-case pass finds "Let's get started!"
+			// for `(let's get started!|...)`, and the first pass still prefers
+			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
+			for _, pattern := range []string{"(?s)" + regexEscaped, "(?is)" + regexEscaped} {
+				strategies = append(strategies, LocatorStrategy{
+					Strategy: uiautomator2.StrategyUIAutomator,
+					Value:    `new UiSelector().textMatches("` + pattern + `").clickable(true)` + stateFilters,
+				})
+				strategies = append(strategies, LocatorStrategy{
+					Strategy: uiautomator2.StrategyUIAutomator,
+					Value:    `new UiSelector().descriptionMatches("` + pattern + `").clickable(true)` + stateFilters,
+				})
+			}
 		}
+	}
+
+	if isDottedText(sel.Text) {
+		strategies = dottedTextStrategies(sel.Text, ".clickable(true)"+stateFilters)
 	}
 
 	if len(strategies) == 0 {
@@ -1739,7 +1834,7 @@ type LocatorStrategy struct {
 
 // Element finding timeouts (milliseconds).
 const (
-	DefaultFindTimeout  = 12000 // 12 seconds for required elements
+	DefaultFindTimeout  = 17000 // required elements: Maestro's lookupTimeoutMs
 	OptionalFindTimeout = 7000  // 7 seconds for optional elements
 	QuickFindTimeout    = 1000  // 1 second for quick checks
 )
@@ -1791,7 +1886,17 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 		escaped := escapeUIAutomatorString(sel.ID)
 		idTiers = [][]string{
 			{`.resourceId("` + escaped + `")`},
-			{`.resourceIdMatches(".*` + escaped + `.*")`},
+			// Grouped, so an id written as a regex alternation
+			// ("omnibarTextInput|inputField") keeps both alternatives inside
+			// the wildcards. Ungrouped, `|` split the whole pattern into
+			// ".*omnibarTextInput" or "inputField.*", and neither matched a
+			// full resource id like "com.app:id/inputField".
+			{`.resourceIdMatches("(?i).*(?:` + escaped + `).*")`},
+		}
+		// An anchored id (^x$) cannot match a full "com.app:id/x" inside
+		// wildcards; Maestro also matches the part after the last "/".
+		if core, ok := unanchored(sel.ID); ok {
+			idTiers = append(idTiers, []string{`.resourceIdMatches("(?i)(?:.*/)?(?:` + escapeUIAutomatorString(core) + `)")`})
 		}
 	}
 
@@ -1803,7 +1908,15 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 	if sel.Text != "" {
 		escaped := escapeUIAutomatorString(sel.Text)
 		ciPattern := `(?is).*\Q` + escaped + `\E.*`
-		textTiers = [][]string{
+		if !looksLikeRegex(sel.Text) {
+			exact := `(?is)\Q` + escaped + `\E`
+			textTiers = append(textTiers, []string{
+				`.textMatches("` + exact + `")`,
+				`.descriptionMatches("` + exact + `")`,
+				`.hintMatches("` + exact + `")`,
+			})
+		}
+		textTiers = append(textTiers, [][]string{
 			{
 				`.textContains("` + escaped + `")`,
 				`.descriptionContains("` + escaped + `")`,
@@ -1814,16 +1927,27 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 				`.descriptionMatches("` + ciPattern + `")`,
 				`.hintMatches("` + ciPattern + `")`,
 			},
-		}
+		}...)
 		// Text is already a regex per looksLikeRegex — use it as-is; only
 		// escape Java-string quotes. Escaping regex metachars here would defeat
 		// the regex (turns `.*` into `\.\*`, matching the literal ".*").
 		if looksLikeRegex(sel.Text) {
-			pattern := "(?s)" + escapeUIAutomatorString(sel.Text)
-			textTiers = append(textTiers, []string{
-				`.textMatches("` + pattern + `")`,
-				`.descriptionMatches("` + pattern + `")`,
-			})
+			// Case as written first, then ignoring case, as Maestro matches
+			// (IGNORE_CASE): the ignore-case pass finds "Let's get started!"
+			// for `(let's get started!|...)`, and the first pass still prefers
+			// "SIGN OUT" over "Sign out" for `^SIGN OUT$` (#151).
+			pattern := escapeUIAutomatorString(sel.Text)
+			textTiers = append(textTiers,
+				[]string{`.textMatches("(?s)` + pattern + `")`, `.descriptionMatches("(?s)` + pattern + `")`, `.hintMatches("(?s)` + pattern + `")`},
+				[]string{`.textMatches("(?is)` + pattern + `")`, `.descriptionMatches("(?is)` + pattern + `")`, `.hintMatches("(?is)` + pattern + `")`},
+			)
+		}
+	}
+	if isDottedText(sel.Text) {
+		p := escapeUIAutomatorString(sel.Text)
+		textTiers = [][]string{
+			{`.textMatches("(?s)` + p + `")`, `.descriptionMatches("(?s)` + p + `")`, `.hintMatches("(?s)` + p + `")`},
+			{`.textMatches("(?is)` + p + `")`, `.descriptionMatches("(?is)` + p + `")`, `.hintMatches("(?is)` + p + `")`},
 		}
 	}
 
@@ -1865,6 +1989,70 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 	}
 
 	return strategies, nil
+}
+
+// isDottedText reports a text selector with a dot but no other regex syntax.
+// Maestro compiles every text selector as a regex, so its dots match any
+// character and the whole text has to match: "DDG." is not found in
+// "Not DDG.". Such selectors skip the substring fallback plain text gets.
+func isDottedText(text string) bool {
+	return text != "" && !looksLikeRegex(text) && strings.Contains(text, ".")
+}
+
+// dottedTextStrategies matches a dotted text selector whole against text,
+// description or hint: as written first, then ignoring case.
+func dottedTextStrategies(text, filters string) []LocatorStrategy {
+	p := escapeUIAutomatorString(text)
+	var out []LocatorStrategy
+	for _, flags := range []string{"(?s)", "(?is)"} {
+		for _, attr := range []string{"textMatches", "descriptionMatches", "hintMatches"} {
+			out = append(out, LocatorStrategy{
+				Strategy: uiautomator2.StrategyUIAutomator,
+				Value:    `new UiSelector().` + attr + `("` + flags + p + `")` + filters,
+			})
+		}
+	}
+	return out
+}
+
+// exactTextStrategies matches a plain text selector against the whole text,
+// description or hint, ignoring case, as Maestro does. A regex selector gets
+// none: its own patterns already match whole.
+func exactTextStrategies(text, filters string) []LocatorStrategy {
+	if looksLikeRegex(text) {
+		return nil
+	}
+	exact := `(?is)\Q` + escapeUIAutomatorString(text) + `\E`
+	var out []LocatorStrategy
+	for _, attr := range []string{"textMatches", "descriptionMatches", "hintMatches"} {
+		out = append(out, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().` + attr + `("` + exact + `")` + filters,
+		})
+	}
+	return out
+}
+
+// isExactTextStrategy reports whether s is one of exactTextStrategies.
+func isExactTextStrategy(s LocatorStrategy) bool {
+	return strings.Contains(s.Value, `Matches("(?is)\Q`) && !strings.Contains(s.Value, `\E.*"`)
+}
+
+// exactTextFirst moves the whole-text strategies ahead of the rest, keeping
+// each group's order. A tap tries the clickable list and then the full one;
+// without this, a clickable element merely containing the text (an address
+// bar showing ".../registration-username") beat the element that is exactly
+// "Username".
+func exactTextFirst(strategies []LocatorStrategy) []LocatorStrategy {
+	var exact, rest []LocatorStrategy
+	for _, s := range strategies {
+		if isExactTextStrategy(s) {
+			exact = append(exact, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	return append(exact, rest...)
 }
 
 // looksLikeRegex checks if text contains regex metacharacters.
@@ -1989,4 +2177,112 @@ func selectRelativeCandidate(candidates []*ParsedElement, index string, filterTy
 		}
 	}
 	return SelectByIndex(candidates, index)
+}
+
+// SetAnimationsDisabled switches the device's animation scales off, or puts
+// back the ones saved when they were switched off (disableAnimations).
+func (d *Driver) SetAnimationsDisabled(disabled bool) error {
+	if d.device == nil {
+		return fmt.Errorf("disableAnimations needs device shell access")
+	}
+	return d.animations.Set(d.device, disabled)
+}
+
+// actsOnScreen reports whether a step acts on what is on screen, so it must
+// not run while the previous tap's UI is still changing.
+func actsOnScreen(step flow.Step) bool {
+	switch step.(type) {
+	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep,
+		*flow.DragAndDropStep, *flow.ScrollStep, *flow.SwipeStep,
+		*flow.BackStep, *flow.PressKeyStep, *flow.CopyTextFromStep:
+		return true
+	}
+	return false
+}
+
+// snapshotPollGap spaces the reads of a visibility check: each is one full
+// tree read (~50-100ms), so this keeps a poll near 10 reads a second without
+// spinning the agent.
+const snapshotPollGap = 50 * time.Millisecond
+
+// checksBySnapshot reports whether a visibility check for sel can be answered
+// from one whole-screen read matched on the host. Relative, index and CSS
+// selectors keep their own paths.
+func checksBySnapshot(sel flow.Selector) bool {
+	return !sel.HasRelativeSelector() && !sel.HasNonZeroIndex() && sel.CSS == "" &&
+		(sel.Text != "" || sel.ID != "")
+}
+
+// findVisibleOnce reads every window's tree once and returns the first
+// element matching sel that is visible and has area on screen. One read
+// answers for every way the selector can match (text, description and hint;
+// whole, part or regex), where the agent's per-form finds took a call each:
+// nine for a text selector, ~1.8s a round when the element was absent.
+func (d *Driver) findVisibleOnce(sel flow.Selector) (*core.ElementInfo, error) {
+	xml, err := d.client.Snapshot(0)
+	if err != nil {
+		if xml, err = d.client.Source(); err != nil {
+			return nil, fmt.Errorf("failed to read the screen: %w", err)
+		}
+	}
+	elements, err := ParsePageSource(xml)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse the screen: %w", err)
+	}
+	for _, e := range FilterBySelector(elements, sel) {
+		if e.Bounds.Width <= 0 || e.Bounds.Height <= 0 {
+			continue
+		}
+		c := GetClickableElement(e)
+		return &core.ElementInfo{
+			Text:    e.Text,
+			Bounds:  core.Bounds{X: c.Bounds.X, Y: c.Bounds.Y, Width: c.Bounds.Width, Height: c.Bounds.Height},
+			Enabled: e.Enabled,
+			Visible: true,
+		}, nil
+	}
+	return nil, fmt.Errorf("element '%s' not found", sel.Describe())
+}
+
+// findVisible polls findVisibleOnce until sel is on screen or the timeout
+// (counted from the first read) runs out. A first miss may re-issue the last
+// tap, as the lazy retry does for the per-form finds.
+func (d *Driver) findVisible(sel flow.Selector, optional bool, stepTimeoutMs int) (*core.ElementInfo, error) {
+	start := time.Now()
+	deadline := start.Add(d.calculateTimeout(optional, stepTimeoutMs))
+	info, err := d.findVisibleOnce(sel)
+	if err == nil {
+		return info, nil
+	}
+	for d.maybeLazyRetryTap() {
+		logger.Info("[devicelab] lazy retry: re-issued tap on %s after assertion probe failed", d.lastTapSelector.Describe())
+		if info, err = d.findVisibleOnce(sel); err == nil {
+			return info, nil
+		}
+	}
+	ctx := d.parentContext()
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(snapshotPollGap):
+		}
+		if info, err = d.findVisibleOnce(sel); err == nil {
+			return info, nil
+		}
+	}
+	return nil, err
+}
+
+// unanchored strips a leading ^ and a trailing unescaped $ from an id regex,
+// reporting whether it had either.
+func unanchored(id string) (string, bool) {
+	core, anchored := id, false
+	if strings.HasPrefix(core, "^") {
+		core, anchored = core[1:], true
+	}
+	if strings.HasSuffix(core, "$") && !strings.HasSuffix(core, `\$`) {
+		core, anchored = core[:len(core)-1], true
+	}
+	return core, anchored
 }

@@ -28,10 +28,83 @@ extension RunnerTests {
     let queryRoot: XCUIElement
     let rootSnapshot: XCUIElementSnapshot
     let viewport: CGRect
-    let flatSnapshots: [XCUIElementSnapshot]
-    let snapshotRanges: [ObjectIdentifier: (Int, Int)]
+    let occlusion: OcclusionIndex
     let maxDepth: Int
   }
+
+  /// Everything the hittable check needs, read once per snapshot. The check
+  /// asks whether any element drawn later (after the node's own subtree, in
+  /// depth-first order) covers the node's centre. It used to re-read every
+  /// later snapshot's frame and type for every node — O(n²) Objective-C
+  /// property reads, seconds on a web page with thousands of nodes. Frames
+  /// are now read once, and only on-screen occluders are kept, so each node
+  /// scans a short precomputed list.
+  struct OcclusionIndex {
+    /// Depth-first position of each snapshot, and the last position inside
+    /// its subtree.
+    let position: [ObjectIdentifier: (start: Int, end: Int)]
+    /// Positions of elements that can cover others (anything but the
+    /// application and its windows) with a frame on screen, ascending.
+    let occluderPositions: [Int]
+    /// Frames, parallel to occluderPositions.
+    let occluderFrames: [CGRect]
+
+    init(root: XCUIElementSnapshot, viewport: CGRect, isOccluding: (XCUIElement.ElementType) -> Bool) {
+      var position: [ObjectIdentifier: (start: Int, end: Int)] = [:]
+      var occluderPositions: [Int] = []
+      var occluderFrames: [CGRect] = []
+      var next = 0
+      @discardableResult
+      func visit(_ snapshot: XCUIElementSnapshot) -> Int {
+        let start = next
+        next += 1
+        let frame = snapshot.frame
+        if isOccluding(snapshot.elementType), !frame.isNull, !frame.isEmpty, frame.intersects(viewport) {
+          occluderPositions.append(start)
+          occluderFrames.append(frame)
+        }
+        var end = start
+        for child in snapshot.children {
+          end = max(end, visit(child))
+        }
+        position[ObjectIdentifier(snapshot)] = (start, end)
+        return end
+      }
+      visit(root)
+      self.position = position
+      self.occluderPositions = occluderPositions
+      self.occluderFrames = occluderFrames
+    }
+
+    /// Whether an element drawn after `snapshot`'s subtree covers `point`.
+    func isCovered(_ snapshot: XCUIElementSnapshot, at point: CGPoint) -> Bool {
+      guard let range = position[ObjectIdentifier(snapshot)] else { return false }
+      // First occluder past the subtree, by binary search.
+      var lo = 0
+      var hi = occluderPositions.count
+      while lo < hi {
+        let mid = (lo + hi) / 2
+        if occluderPositions[mid] <= range.end { lo = mid + 1 } else { hi = mid }
+      }
+      for i in lo..<occluderFrames.count where occluderFrames[i].contains(point) {
+        return true
+      }
+      return false
+    }
+  }
+
+  /// The fraction of `rect` that lies on screen, 0 for an empty rect.
+  static func visibleFraction(_ rect: CGRect, in viewport: CGRect) -> CGFloat {
+    if rect.isNull || rect.isEmpty { return 0 }
+    let area = rect.width * rect.height
+    if area <= 0 { return 0 }
+    let overlap = rect.intersection(viewport)
+    if overlap.isNull || overlap.isEmpty { return 0 }
+    return (overlap.width * overlap.height) / area
+  }
+
+  /// Maestro keeps an element when at least 10% of it is on screen.
+  static let minVisibleFraction: CGFloat = 0.1
 
   private struct SnapshotEvaluation {
     let label: String
@@ -156,16 +229,36 @@ extension RunnerTests {
     }
 
     var seen = Set<String>()
-    var stack: [(XCUIElementSnapshot, Int, Int, Int?)] = context.rootSnapshot.children.map {
-      ($0, 1, 1, 0)
+    // The last field is true when an ancestor lies wholly off screen: its
+    // descendants' frames are then clipped to the viewport by the app
+    // (Flutter semantics especially) and cannot be trusted as "on screen".
+    var stack: [(XCUIElementSnapshot, Int, Int, Int?, Bool)] = context.rootSnapshot.children.map {
+      ($0, 1, 1, 0, false)
     }
+    let nodeLimit = options.visibleOnly ? visibleSnapshotLimit : fastSnapshotLimit
 
-    while let (snapshot, depth, visibleDepth, parentIndex) = stack.popLast() {
-      if nodes.count >= fastSnapshotLimit {
+    while let (snapshot, depth, visibleDepth, parentIndex, underOffscreen) = stack.popLast() {
+      if nodes.count >= nodeLimit {
         truncated = true
         break
       }
       if let limit = options.depth, depth > limit { continue }
+
+      let frame = snapshot.frame
+      let hasFrame = !frame.isNull && !frame.isEmpty
+      let offscreen = hasFrame && !frame.intersects(context.viewport)
+      if options.visibleOnly
+        && (underOffscreen || Self.visibleFraction(frame, in: context.viewport) < Self.minVisibleFraction) {
+        // Not on screen: leave it out, but keep walking — a frameless
+        // wrapper can hold visible children, and those attach to the
+        // nearest included ancestor.
+        if depth < context.maxDepth {
+          for child in snapshot.children.reversed() {
+            stack.append((child, depth + 1, visibleDepth, parentIndex, underOffscreen || offscreen))
+          }
+        }
+        continue
+      }
 
       let evaluation = evaluateSnapshot(snapshot, in: context)
       let include = shouldInclude(
@@ -188,7 +281,7 @@ extension RunnerTests {
       if depth < context.maxDepth {
         let nextVisibleDepth = include && !isDuplicate ? visibleDepth + 1 : visibleDepth
         for child in snapshot.children.reversed() {
-          stack.append((child, depth + 1, nextVisibleDepth, currentIndex))
+          stack.append((child, depth + 1, nextVisibleDepth, currentIndex, underOffscreen || offscreen))
         }
       }
 
@@ -211,7 +304,7 @@ extension RunnerTests {
           resolveElements: collapsedTabDescendants,
           depth: visibleDepth + 1,
           parentIndex: index,
-          nodeLimit: fastSnapshotLimit
+          nodeLimit: nodeLimit
         )
         truncated = truncated || didTruncateFallback
       }
@@ -374,21 +467,14 @@ extension RunnerTests {
 
   private func computedSnapshotHittable(
     _ snapshot: XCUIElementSnapshot,
-    viewport: CGRect,
-    laterNodes: ArraySlice<XCUIElementSnapshot>
+    in context: SnapshotTraversalContext
   ) -> Bool {
     guard snapshot.isEnabled else { return false }
     let frame = snapshot.frame
     if frame.isNull || frame.isEmpty { return false }
     let center = CGPoint(x: frame.midX, y: frame.midY)
-    if !viewport.contains(center) { return false }
-    for node in laterNodes {
-      if !isOccludingType(node.elementType) { continue }
-      let nodeFrame = node.frame
-      if nodeFrame.isNull || nodeFrame.isEmpty { continue }
-      if nodeFrame.contains(center) { return false }
-    }
-    return true
+    if !context.viewport.contains(center) { return false }
+    return !context.occlusion.isCovered(snapshot, at: center)
   }
 
   /// Runs a snapshot command's queries with a short XPC request timeout, so a
@@ -434,14 +520,12 @@ extension RunnerTests {
     }
 
     let viewport = snapshotViewport(app: app, rootSnapshot: queryRoot === app ? rootSnapshot : nil)
-    let (flatSnapshots, snapshotRanges) = flattenedSnapshots(rootSnapshot)
     return SnapshotTraversalContext(
       app: app,
       queryRoot: queryRoot,
       rootSnapshot: rootSnapshot,
       viewport: viewport,
-      flatSnapshots: flatSnapshots,
-      snapshotRanges: snapshotRanges,
+      occlusion: OcclusionIndex(root: rootSnapshot, viewport: viewport, isOccluding: isOccludingType),
       maxDepth: options.depth ?? Int.max
     )
   }
@@ -487,16 +571,11 @@ extension RunnerTests {
     let label = aggregatedLabel(for: snapshot) ?? snapshot.label.trimmingCharacters(in: .whitespacesAndNewlines)
     let identifier = snapshot.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
     let valueText = snapshotValueText(snapshot)
-    let laterNodes = laterSnapshots(
-      for: snapshot,
-      in: context.flatSnapshots,
-      ranges: context.snapshotRanges
-    )
     return SnapshotEvaluation(
       label: label,
       identifier: identifier,
       valueText: valueText,
-      hittable: computedSnapshotHittable(snapshot, viewport: context.viewport, laterNodes: laterNodes),
+      hittable: computedSnapshotHittable(snapshot, in: context),
       focused: snapshotHasFocus(snapshot),
       selected: snapshotIsSelected(snapshot),
       visible: isVisibleInViewport(snapshot.frame, context.viewport)
@@ -552,43 +631,6 @@ extension RunnerTests {
     default:
       return true
     }
-  }
-
-  private func flattenedSnapshots(
-    _ root: XCUIElementSnapshot
-  ) -> ([XCUIElementSnapshot], [ObjectIdentifier: (Int, Int)]) {
-    var ordered: [XCUIElementSnapshot] = []
-    var ranges: [ObjectIdentifier: (Int, Int)] = [:]
-
-    @discardableResult
-    func visit(_ snapshot: XCUIElementSnapshot) -> Int {
-      let start = ordered.count
-      ordered.append(snapshot)
-      var end = start
-      for child in snapshot.children {
-        end = max(end, visit(child))
-      }
-      ranges[ObjectIdentifier(snapshot)] = (start, end)
-      return end
-    }
-
-    _ = visit(root)
-    return (ordered, ranges)
-  }
-
-  private func laterSnapshots(
-    for snapshot: XCUIElementSnapshot,
-    in ordered: [XCUIElementSnapshot],
-    ranges: [ObjectIdentifier: (Int, Int)]
-  ) -> ArraySlice<XCUIElementSnapshot> {
-    guard let (_, subtreeEnd) = ranges[ObjectIdentifier(snapshot)] else {
-      return ordered.suffix(from: ordered.count)
-    }
-    let nextIndex = subtreeEnd + 1
-    if nextIndex >= ordered.count {
-      return ordered.suffix(from: ordered.count)
-    }
-    return ordered.suffix(from: nextIndex)
   }
 
   private func snapshotValueText(_ snapshot: XCUIElementSnapshot) -> String? {

@@ -3,27 +3,18 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
-	dliosdriver "github.com/devicelab-dev/maestro-runner/pkg/driver/devicelab_ios"
+	dlios "github.com/devicelab-dev/maestro-runner/pkg/driver/devicelab_ios"
 	"github.com/devicelab-dev/maestro-runner/pkg/flutter"
-	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
-// createDevicelabIOSDriver constructs an iOS driver backed by the
-// devicelab-ios-runner XCUITest server. Phase 4 supports simulator only.
-//
-// Lifecycle:
-//  1. Resolve a booted iOS simulator UDID
-//  2. Optionally install the AUT app (cfg.AppFile)
-//  3. Resolve the runner artifacts directory (env var or dev default)
-//  4. Launch the runner via devicelab_ios.Setup
-//  5. Query the runner for screen size to populate PlatformInfo
-//  6. Build and return the Driver + cleanup
+// createDevicelabIOSDriver constructs the iOS driver for --driver devicelab:
+// the prebuilt devicelab-ios-agent (drivers/ios/devicelab-ios-agent/) on a
+// booted simulator. The agent stays up between runs; a later run re-attaches
+// to it instead of starting it again. A physical iPhone goes to
+// createDevicelabIOSDeviceDriver.
 func createDevicelabIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	udid := getFirstDevice(cfg)
 	if udid == "" {
@@ -31,13 +22,17 @@ func createDevicelabIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		var err error
 		udid, err = findBootedSimulator()
 		if err != nil || udid == "" {
-			return nil, nil, fmt.Errorf("devicelab iOS driver requires a booted simulator (Phase 4 does not support real devices yet)")
+			// No simulator booted: a connected iPhone, as the WDA path does.
+			if dev, derr := findConnectedDevice(); derr == nil && dev != "" {
+				printSetupSuccess(fmt.Sprintf("Found device: %s", dev))
+				return createDevicelabIOSDeviceDriver(cfg, dev)
+			}
+			return nil, nil, fmt.Errorf("--driver devicelab on iOS needs a booted simulator or a connected iPhone")
 		}
 		printSetupSuccess(fmt.Sprintf("Found simulator: %s", udid))
 	}
-
 	if !isIOSSimulator(udid) {
-		return nil, nil, fmt.Errorf("devicelab iOS driver only supports simulators in Phase 4; %s appears to be a physical device", udid)
+		return createDevicelabIOSDeviceDriver(cfg, udid)
 	}
 
 	if cfg.AppFile != "" && !cfg.NoAppInstall {
@@ -48,70 +43,34 @@ func createDevicelabIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		printSetupSuccess("App installed")
 	}
 
-	// $DEVICELAB_IOS_RUNNER_ARTIFACTS_DIR overrides the bundled-source path
-	// for local development (point at a derived-data dir built manually).
-	// Otherwise: build from the vendored source on first run, cache for
-	// subsequent runs (same UX as the WDA driver).
+	// Before the agent and the app start, so both launch with them.
+	dlios.ApplySimulatorPrefs(udid)
+
 	ctx := context.Background()
-	artifactsDir := os.Getenv("DEVICELAB_IOS_RUNNER_ARTIFACTS_DIR")
-	if artifactsDir == "" {
-		var err error
-		printSetupStep("Resolving devicelab iOS runner build...")
-		artifactsDir, err = dliosdriver.EnsureBuilt(ctx, udid)
-		if err != nil {
-			return nil, nil, fmt.Errorf("devicelab iOS runner: %w", err)
-		}
-		printSetupSuccess(fmt.Sprintf("Runner build: %s", filepath.Base(artifactsDir)))
-	} else if _, err := os.Stat(filepath.Join(artifactsDir, "Build/Products")); err != nil {
-		return nil, nil, fmt.Errorf("DEVICELAB_IOS_RUNNER_ARTIFACTS_DIR points at %s but no Build/Products dir is present", artifactsDir)
-	}
-
-	printSetupStep("Starting devicelab iOS runner...")
-	logger.Info("Launching devicelab-ios-runner from %s on simulator %s", artifactsDir, udid)
-	logger.Info("Runner log: %s", filepath.Join(artifactsDir, "logs", "runner.log"))
-
-	client, runner, err := dliosdriver.Setup(ctx, dliosdriver.SetupOptions{
-		ArtifactsDir:  artifactsDir,
-		SimulatorUDID: udid,
-		// CI macos-latest can take several minutes to spin up an XCTest
-		// runner via xcodebuild test-without-building (we've seen >250s
-		// on successful startups under load). 600s matches upstream
-		// maestro's MAESTRO_DRIVER_STARTUP_TIMEOUT default — sized for
-		// the slowest CI path. Local runs answer the uptime ping well
-		// before the timeout so they pay nothing for the larger budget.
-		ReadyTimeout: 600 * time.Second,
-	})
+	printSetupStep("Starting devicelab iOS agent...")
+	agent, client, err := dlios.StartAgent(ctx, dlios.AgentOptions{UDID: udid, ReadyTimeout: 600 * time.Second})
 	if err != nil {
-		return nil, nil, fmt.Errorf("runner setup failed: %w", err)
+		return nil, nil, fmt.Errorf("devicelab iOS agent: %w", err)
 	}
-	printSetupSuccess(fmt.Sprintf("Runner port: %d", runner.Port()))
+	printSetupSuccess(fmt.Sprintf("Agent ready on port %d (%s)", agent.Port(), agent.Mode()))
+	release := func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		agent.Release(stopCtx, client)
+	}
 
 	deviceInfo, err := getIOSDeviceInfo(udid)
 	if err != nil {
-		_ = dliosdriver.GracefulShutdown(ctx, client, runner)
+		release()
 		return nil, nil, fmt.Errorf("get device info: %w", err)
 	}
 
-	// Query the interaction frame from the runner — that gives the
-	// reference width/height of the host's canvas (no appBundleId, so the
-	// runner falls back to its own host app rather than trying to
-	// activate cfg.AppID which may be an unexpanded `${APP_ID}` template).
-	// Best-effort; PlatformInfo can ship with zeros if this fails.
-	var screenW, screenH int
-	if data, err := client.Call(ctx, dliosdriver.Command{
-		Command: dliosdriver.CmdInteractionFrame,
-	}); err == nil && data != nil {
-		if data.ReferenceWidth != nil {
-			screenW = int(*data.ReferenceWidth)
-		}
-		if data.ReferenceHeight != nil {
-			screenH = int(*data.ReferenceHeight)
-		}
+	// Screen size in points from the agent's own view of the display.
+	screenW, screenH := 0, 0
+	if resp, err := client.Call(ctx, "snapshot", &dlios.Args{MaxNodes: 1}); err == nil && resp.Data != nil {
+		screenW, screenH = int(resp.Data.ScreenW), int(resp.Data.ScreenH)
 	}
 
-	// Read the app's version and build number the same way the wda path does.
-	// cfg.AppID can still be an unexpanded ${APP_ID} template here, in which
-	// case the lookup simply finds nothing and the report says so.
 	appVersion, appBuild := "", ""
 	if cfg.AppID != "" {
 		appVersion, appBuild = getIOSAppVersionAndBuild(udid, cfg.AppID)
@@ -120,7 +79,7 @@ func createDevicelabIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		appVersion, appBuild = readBundleVersionAndBuild(cfg.AppFile)
 	}
 
-	platformInfo := &core.PlatformInfo{
+	info := &core.PlatformInfo{
 		Platform:     "ios",
 		OSVersion:    deviceInfo.OSVersion,
 		DeviceName:   deviceInfo.Name,
@@ -133,38 +92,30 @@ func createDevicelabIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		AppBuild:     appBuild,
 	}
 
-	drv := dliosdriver.NewDriver(client, platformInfo, udid, runner)
+	drv := dlios.NewDriver(client, info, udid)
 	if cfg.AppID != "" {
 		drv.SetAppID(cfg.AppID)
 	}
 	if cfg.TypingFrequency > 0 {
 		_ = drv.SetTypingFrequency(cfg.TypingFrequency)
 	}
-
 	cleanup := func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = dliosdriver.GracefulShutdown(shutdownCtx, client, runner)
+		drv.Close()
+		release()
 	}
 
-	// Wrap with the Flutter VM Service fallback, same as the WDA path — this
-	// driver is simulator-only, so the wrap is unconditional apart from the
-	// flag. Without it, Flutter elements missing from the accessibility tree
-	// were findable on WDA but not here, which read as a devicelab tap bug.
+	// The Flutter VM Service fallback, as on the WDA and legacy paths.
 	var driver core.Driver = drv
 	if !cfg.NoFlutterFallback {
 		fw := flutter.WrapIOS(drv, nil, udid, cfg.AppID)
 		driver = fw
-		origCleanup := cleanup
+		inner := cleanup
 		cleanup = func() {
 			if fd, ok := fw.(*flutter.FlutterDriver); ok {
 				fd.Close()
 			}
-			origCleanup()
+			inner()
 		}
 	}
-
-	// Silence unused-import warnings if logger doesn't appear elsewhere.
-	_ = strings.ToLower
 	return driver, cleanup, nil
 }

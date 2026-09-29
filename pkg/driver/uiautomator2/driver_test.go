@@ -342,30 +342,21 @@ func TestBuildSelectorsRegexPattern(t *testing.T) {
 		t.Fatalf("buildSelectors failed: %v", err)
 	}
 
-	// Should have 2 strategies: text and description
-	if len(strategies) != 2 {
-		t.Errorf("expected 2 strategies, got %d", len(strategies))
+	// Four strategies: text and description with the case as written, then
+	// both again ignoring case, as Maestro matches (IGNORE_CASE). The first
+	// pair keeps `^SIGN OUT$` on the "SIGN OUT" button when a "Sign out" row
+	// is also on screen (#151); the second finds `(let's get started!|...)`
+	// against "Let's get started!", which Maestro passes.
+	if len(strategies) != 4 {
+		t.Fatalf("expected 4 strategies, got %d", len(strategies))
 	}
-
-	// First should be text-based with regex pattern preserved
-	s := strategies[0]
-	if !strings.Contains(s.Value, "textMatches") {
-		t.Error("expected textMatches in selector")
-	}
-	if !strings.Contains(s.Value, ".+@.+") {
-		t.Errorf("expected regex pattern '.+@.+' to be preserved, got: %s", s.Value)
-	}
-	// Regex selectors are case-SENSITIVE, as Maestro's are. This test used to
-	// require (?i) and so pinned the defect: every regex was compiled
-	// case-insensitively, and an anchored pattern could not distinguish what
-	// it was written to distinguish — `^SIGN OUT$` matched a "Sign out" row as
-	// readily as the "SIGN OUT" button.
-	if strings.Contains(s.Value, "(?is)") {
-		t.Errorf("regex selectors must not be case-insensitive, got: %s", s.Value)
-	}
-	// (?s) stays: it only makes `.` span newlines, which multi-line labels need.
-	if !strings.Contains(s.Value, "(?s)") {
-		t.Errorf("expected the dotall flag to be preserved, got: %s", s.Value)
+	for i, want := range []string{"textMatches(\"(?s)", "descriptionMatches(\"(?s)", "textMatches(\"(?is)", "descriptionMatches(\"(?is)"} {
+		if !strings.Contains(strategies[i].Value, want) {
+			t.Errorf("strategy %d = %s, want it to contain %s", i, strategies[i].Value, want)
+		}
+		if !strings.Contains(strategies[i].Value, ".+@.+") {
+			t.Errorf("strategy %d lost the regex pattern: %s", i, strategies[i].Value)
+		}
 	}
 }
 
@@ -393,7 +384,7 @@ func TestBuildSelectorsID(t *testing.T) {
 	}
 
 	// Second strategy is the substring fallback.
-	if !strings.Contains(strategies[1].Value, `resourceIdMatches(".*login_btn.*")`) {
+	if !strings.Contains(strategies[1].Value, `resourceIdMatches("(?i).*(?:login_btn).*")`) {
 		t.Errorf("expected substring fallback second, got: %s", strategies[1].Value)
 	}
 }
@@ -420,8 +411,8 @@ func TestBuildSelectorsForTapID(t *testing.T) {
 	}{
 		{0, `resourceId("login_btn").clickable(true)`, "resourceIdMatches"},
 		{1, `resourceId("login_btn")`, "resourceIdMatches"},
-		{2, `resourceIdMatches(".*login_btn.*").clickable(true)`, ""},
-		{3, `resourceIdMatches(".*login_btn.*")`, ""},
+		{2, `resourceIdMatches("(?i).*(?:login_btn).*").clickable(true)`, ""},
+		{3, `resourceIdMatches("(?i).*(?:login_btn).*")`, ""},
 	}
 	for _, c := range cases {
 		if !strings.Contains(strategies[c.idx].Value, c.want) {
@@ -475,7 +466,7 @@ func TestBuildSelectorsIDLiteral(t *testing.T) {
 	}
 
 	// Substring fallback (index 1) — preserve the .* wrap.
-	if !strings.Contains(strategies[1].Value, `".*login_btn.*"`) {
+	if !strings.Contains(strategies[1].Value, `"(?i).*(?:login_btn).*"`) {
 		t.Errorf("literal ID substring fallback should be wrapped with .*, got: %s", strategies[1].Value)
 	}
 }
@@ -3416,5 +3407,26 @@ func TestKeyPressAppliesTypingDelay(t *testing.T) {
 	}
 	if client2.lastKeyDelayMs != 0 {
 		t.Errorf("default lastKeyDelayMs = %d, want 0", client2.lastKeyDelayMs)
+	}
+}
+
+// An id written as a regex alternation keeps both alternatives inside the
+// wildcards. Ungrouped, "omnibarTextInput|inputField" became
+// ".*omnibarTextInput|inputField.*", which matches neither alternative in a
+// full resource id like "com.duckduckgo.mobile.android:id/inputField".
+func TestIDAlternationStaysGrouped(t *testing.T) {
+	strategies, err := buildSelectors(flow.Selector{ID: "omnibarTextInput|inputField"}, 0)
+	if err != nil {
+		t.Fatalf("buildSelectors: %v", err)
+	}
+	want := `resourceIdMatches("(?i).*(?:omnibarTextInput|inputField).*")`
+	found := false
+	for _, s := range strategies {
+		if strings.Contains(s.Value, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no strategy contains %s", want)
 	}
 }

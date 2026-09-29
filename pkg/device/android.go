@@ -451,6 +451,38 @@ func (d *AndroidDevice) Info() (DeviceInfo, error) {
 }
 
 // adb executes an ADB command.
+// ShellTimeout runs an adb shell command, killing adb if it runs past
+// timeout. Output is returned even when the command fails or times out.
+// Plain Shell has no deadline, and a launch fallback once blocked a run
+// for ten minutes on a device call that never returned.
+func (d *AndroidDevice) ShellTimeout(cmd string, timeout time.Duration) (string, error) {
+	args := make([]string, 0, 4)
+	if d.serial != "" {
+		args = append(args, "-s", d.serial)
+	}
+	args = append(args, "shell", cmd)
+	c := execCommand(d.adbPath, args...)
+	var stdout, stderr bytes.Buffer
+	c.Stdout = &stdout
+	c.Stderr = &stderr
+	if err := c.Start(); err != nil {
+		return "", fmt.Errorf("adb shell %s: %w", cmd, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return stdout.String(), fmt.Errorf("adb shell %s: %w: %s", cmd, err, stderr.String())
+		}
+		return stdout.String(), nil
+	case <-time.After(timeout):
+		_ = c.Process.Kill()
+		<-done
+		return stdout.String(), fmt.Errorf("adb shell %s: timed out after %v", cmd, timeout)
+	}
+}
+
 func (d *AndroidDevice) adb(args ...string) (string, error) {
 	out, err := d.adbOutput(args...)
 	return string(out), err

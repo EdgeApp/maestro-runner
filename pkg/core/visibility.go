@@ -1,5 +1,7 @@
 package core
 
+import "strings"
+
 // VisibleFraction reports how much of the element's area lies inside the
 // viewport, as a fraction in [0, 1].
 //
@@ -154,4 +156,22 @@ func ScrollDurationOrDefault(speed, driverDefaultMs int) int {
 		return d
 	}
 	return driverDefaultMs
+}
+
+// NearScreenCenter is scrollUntilVisible's centerElement test, as in Maestro:
+// the element's centre lies in the half of the screen the content scrolls
+// towards, plus a fifth of the screen. Scrolling down (content moving up)
+// wants the centre above the middle plus that margin.
+func NearScreenCenter(b Bounds, screenW, screenH int, scrollDirection string) bool {
+	cx, cy := b.X+b.Width/2, b.Y+b.Height/2
+	switch strings.ToLower(scrollDirection) {
+	case "up":
+		return cy > screenH/2-screenH/5
+	case "left":
+		return cx > screenW/2-screenW/5
+	case "right":
+		return cx < screenW/2+screenW/5
+	default:
+		return cy < screenH/2+screenH/5
+	}
 }

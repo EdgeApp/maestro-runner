@@ -4,11 +4,13 @@ package devicelab_ios
 
 import "os/exec"
 
-// setProcessGroup is a no-op on Windows, which has no process groups in the
-// POSIX sense — syscall.SysProcAttr there carries no Setpgid field at all.
-//
-// Nothing is lost: this package drives xcodebuild against iOS simulators, so on
-// Windows it never runs. It exists only so the package compiles, which is what
-// `GOOS=windows go build ./...` needs in order to build the parts of
-// maestro-runner that do work there.
+// The iOS driver never runs on Windows; these exist so the package compiles
+// for `GOOS=windows go build ./...`.
+
 func setProcessGroup(cmd *exec.Cmd) {}
+
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+}

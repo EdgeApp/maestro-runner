@@ -40,9 +40,13 @@ type iosDeviceInfo struct {
 // CreateIOSDriver creates an iOS driver using WebDriverAgent.
 // Exported for library use.
 func CreateIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
-	// Phase 4 — devicelab driver branch. Mirrors --driver devicelab on Android.
-	// Routes to the XCUITest-based runner (pkg/driver/devicelab_ios) instead
-	// of WebDriverAgent. Simulator-only in Phase 4.
+	// --driver devicelab: the prebuilt devicelab-ios-agent
+	// (pkg/driver/devicelab_ios). --driver devicelab-legacy: the previous
+	// runner built from source (pkg/driver/devicelab_ios_legacy). Both are
+	// simulator-only.
+	if strings.EqualFold(cfg.Driver, "devicelab-legacy") {
+		return createDevicelabLegacyIOSDriver(cfg)
+	}
 	if strings.EqualFold(cfg.Driver, "devicelab") {
 		return createDevicelabIOSDriver(cfg)
 	}

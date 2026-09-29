@@ -201,8 +201,10 @@ func TestKillApp_HappyPath(t *testing.T) {
 	if !res.Success {
 		t.Fatalf("killApp failed: %v", res.Error)
 	}
-	if len(shell.commands) != 1 || !strings.Contains(shell.commands[0], "am force-stop com.test.app") {
-		t.Errorf("expected force-stop command, got %v", shell.commands)
+	// killApp is a system-initiated process death (am kill), as in Maestro;
+	// force-stop belongs to stopApp.
+	if len(shell.commands) != 1 || shell.commands[0] != "am kill com.test.app" {
+		t.Errorf("expected am kill, got %v", shell.commands)
 	}
 }
 
@@ -1631,12 +1633,15 @@ type richClient struct {
 	settleQuiet  bool
 	settleErr    error
 	applySettErr error
+	settleCalls  [][2]int
 }
 
 func (r *richClient) Source() (string, error)         { return r.source, r.sourceErr }
+func (r *richClient) Snapshot(int) (string, error)    { return r.source, r.sourceErr }
 func (r *richClient) GetOrientation() (string, error) { return r.orientation, nil }
 func (r *richClient) GetClipboard() (string, error)   { return r.clipboard, nil }
 func (r *richClient) WaitForSettle(timeoutMs, quietMs int) (bool, error) {
+	r.settleCalls = append(r.settleCalls, [2]int{timeoutMs, quietMs})
 	return r.settleQuiet, r.settleErr
 }
 func (r *richClient) SetAppiumSettings(settings map[string]interface{}) error {
@@ -1777,6 +1782,46 @@ func TestDriver_WaitForSettle(t *testing.T) {
 	}
 }
 
+func TestActsOnScreen(t *testing.T) {
+	for _, s := range []flow.Step{&flow.TapOnStep{}, &flow.SwipeStep{}, &flow.BackStep{}, &flow.PressKeyStep{}, &flow.CopyTextFromStep{}} {
+		if !actsOnScreen(s) {
+			t.Errorf("actsOnScreen(%T) = false", s)
+		}
+	}
+	for _, s := range []flow.Step{&flow.AssertVisibleStep{}, &flow.AssertNotVisibleStep{}, &flow.WaitUntilStep{},
+		&flow.InputTextStep{}, &flow.HideKeyboardStep{}, &flow.LaunchAppStep{}} {
+		if actsOnScreen(s) {
+			t.Errorf("actsOnScreen(%T) = true", s)
+		}
+	}
+}
+
+// A settle keeps its own limit whatever waitForIdleTimeout is (its 200ms
+// default once cut every settle short), and waitForIdleTimeout 0 skips it.
+func TestSettle_IdleTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		idle  int // -1 = never set
+		calls [][2]int
+	}{
+		{"unset", -1, [][2]int{{settleAfterTapTimeoutMs, settleQuietMs}}},
+		{"default 200", 200, [][2]int{{settleAfterTapTimeoutMs, settleQuietMs}}},
+		{"zero skips", 0, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &richClient{trackingClient: newTrackingClient(), settleQuiet: true}
+			d := New(client, &core.PlatformInfo{}, &mockShell{})
+			if tc.idle >= 0 {
+				_ = d.SetWaitForIdleTimeout(tc.idle)
+			}
+			d.settle(settleAfterTapTimeoutMs, "tap")
+			if len(client.settleCalls) != len(tc.calls) || (len(tc.calls) > 0 && client.settleCalls[0] != tc.calls[0]) {
+				t.Errorf("settle calls = %v, want %v", client.settleCalls, tc.calls)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // scriptedClient — extends trackingClient with scriptable FindElement,
 // FindAndClick, ActiveElement, PressKeyCode tracking, SendKeyActions
@@ -1815,6 +1860,10 @@ func (s *scriptedClient) FindAndClick(strategy, selector string) (*uiautomator2.
 	s.findAndClickCalls++
 	return s.findAndClickReturn, s.findAndClickErr
 }
+func (s *scriptedClient) FindFirstAndClickChecked([]string, int, int, bool) (*uiautomator2.Element, bool, string, int, error) {
+	return nil, false, "", -1, errors.New("unknown_method: Unknown method: Gesture.findFirstAndClick")
+}
+
 func (s *scriptedClient) FindAndClickChecked(strategy, selector string, screenW, screenH int, hitTest bool) (*uiautomator2.Element, bool, string, error) {
 	elem, clicked, err := s.FindAndClickGuarded(strategy, selector, screenW, screenH)
 	s.findAndClickHitTest = hitTest
@@ -1997,11 +2046,20 @@ func TestLongPressOn_CustomDuration(t *testing.T) {
 // assertVisible — uses findElementFast which calls FindElement
 // =============================================================================
 
+// screenWithID is a one-element screen for the whole-screen checks.
+func screenWithID(id string) func() (string, error) {
+	return func() (string, error) {
+		return `<hierarchy><node class="android.widget.TextView" text="Hello" resource-id="` + id +
+			`" displayed="true" enabled="true" bounds="[0,0][10,10]"/></hierarchy>`, nil
+	}
+}
+
 func TestAssertVisible_Success(t *testing.T) {
 	client := &scriptedClient{trackingClient: newTrackingClient()}
 	client.findElementReturn = uiautomator2.NewCachedElement(
 		"id", "Hello", uiautomator2.ElementRect{X: 0, Y: 0, Width: 10, Height: 10},
 	)
+	client.sourceFunc = screenWithID("el")
 	driver := New(client, &core.PlatformInfo{}, &mockShell{})
 
 	res := driver.assertVisible(&flow.AssertVisibleStep{Selector: flow.Selector{ID: "el"}})
@@ -2177,6 +2235,7 @@ func TestAssertNotVisible_ElementStillPresent(t *testing.T) {
 	client.findElementReturn = uiautomator2.NewCachedElement(
 		"id", "Hello", uiautomator2.ElementRect{X: 0, Y: 0, Width: 10, Height: 10},
 	)
+	client.sourceFunc = screenWithID("el")
 	driver := New(client, &core.PlatformInfo{}, &mockShell{})
 
 	// Element is "still visible" → expect failure after short polling timeout.
@@ -2438,6 +2497,7 @@ func TestWaitUntil_Visible_Success(t *testing.T) {
 	client.findElementReturn = uiautomator2.NewCachedElement(
 		"id", "Hello", uiautomator2.ElementRect{X: 0, Y: 0, Width: 10, Height: 10},
 	)
+	client.sourceFunc = screenWithID("el")
 	driver := New(client, &core.PlatformInfo{}, &mockShell{})
 
 	sel := flow.Selector{ID: "el"}
@@ -3446,6 +3506,25 @@ func TestLooksLikeFileName(t *testing.T) {
 	for _, no := range []string{"Save", "Add to cart", "v1.2.3.4.5.6", "", "Downloads", "path/to.pdf", "Mr. Smith"} {
 		if looksLikeFileName(no) {
 			t.Errorf("%q should not look like a file name", no)
+		}
+	}
+}
+
+func TestWebViewRepeatBackoffGrowsAndCaps(t *testing.T) {
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{0, webViewConnectBackoff},
+		{1, webViewConnectBackoff},
+		{2, 2 * webViewConnectBackoff},
+		{3, 4 * webViewConnectBackoff},
+		{4, 8 * webViewConnectBackoff},
+		{10, time.Minute},
+	}
+	for _, c := range cases {
+		if got := webViewRepeatBackoff(c.failures); got != c.want {
+			t.Errorf("webViewRepeatBackoff(%d) = %v, want %v", c.failures, got, c.want)
 		}
 	}
 }
