@@ -511,6 +511,23 @@ func (c *Client) FindElements(using, value string) ([]string, error) {
 	return elements, nil
 }
 
+// CountElements reports how many elements match. A response without a value
+// array is an error, so a zero count is WDA's answer and never a missing one.
+func (c *Client) CountElements(using, value string) (int, error) {
+	resp, err := c.post(c.sessionPath("/elements"), map[string]interface{}{
+		"using": using,
+		"value": value,
+	})
+	if err != nil {
+		return 0, err
+	}
+	val, ok := resp["value"].([]interface{})
+	if !ok {
+		return 0, fmt.Errorf("find elements response has no value array")
+	}
+	return len(val), nil
+}
+
 // elementRef reads an element reference from a find response entry: the
 // legacy ELEMENT key, else the W3C element-6066-... key. Only those keys are
 // read because a non-compact entry also carries string attributes (type,

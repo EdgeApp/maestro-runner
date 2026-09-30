@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -538,7 +539,11 @@ func (d *Driver) findElement(sel flow.Selector, optional bool, stepTimeoutMs int
 	ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
 	defer cancel()
 
-	return d.findElementWithContext(ctx, sel)
+	info, err := d.findElementWithContext(ctx, sel)
+	if err != nil && !optional {
+		return d.withPageSourceHint(sel, err)
+	}
+	return info, err
 }
 
 // findElementWithContext finds an element using context for deadline management.
@@ -561,8 +566,14 @@ func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector) 
 		default:
 			// Try WDA strategies first (skip for index selectors — WDA returns single match)
 			if !sel.HasNonZeroIndex() {
-				if info, err := d.findElementByWDA(sel); err == nil {
+				info, err := d.findElementByWDA(sel)
+				if err == nil {
 					return info, nil
+				}
+				if errors.Is(err, errNotInTree) {
+					lastErr = err
+					time.Sleep(50 * time.Millisecond)
+					continue
 				}
 			}
 
@@ -605,7 +616,11 @@ func (d *Driver) findElementForTap(sel flow.Selector, optional bool, stepTimeout
 		timeout := d.calculateTimeout(optional, stepTimeoutMs)
 		ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
 		defer cancel()
-		return d.findElementForTapWithContext(ctx, sel)
+		info, err := d.findElementForTapWithContext(ctx, sel)
+		if err != nil && !optional {
+			return d.withPageSourceHint(sel, err)
+		}
+		return info, err
 	}
 
 	// For other selectors, use standard approach
@@ -673,6 +688,10 @@ func (d *Driver) findElementForTapWithContext(ctx context.Context, sel flow.Sele
 			containsElemID, textExistsErr := d.client.FindElement("predicate string", predicate)
 
 			if textExistsErr != nil {
+				if d.provenAbsent(sel) {
+					lastErr = errNotInTree
+					continue
+				}
 				// Text not found via WDA at all - try page source as fallback
 				info, psErr := d.findElementByPageSourceOnce(sel)
 				if psErr == nil {
@@ -801,8 +820,9 @@ func (d *Driver) findElementOnce(sel flow.Selector) (*core.ElementInfo, error) {
 	}
 
 	// Single attempt with WDA
-	if info, err := d.findElementByWDA(sel); err == nil {
-		return info, nil
+	info, err := d.findElementByWDA(sel)
+	if err == nil || errors.Is(err, errNotInTree) {
+		return info, err
 	}
 
 	return d.findElementByPageSourceOnce(sel)
@@ -937,6 +957,9 @@ func (d *Driver) findElementByWDA(sel flow.Selector) (*core.ElementInfo, error) 
 		}
 	}
 
+	if d.provenAbsent(sel) {
+		return nil, errNotInTree
+	}
 	return nil, fmt.Errorf("element not found via WDA")
 }
 
