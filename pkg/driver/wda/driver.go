@@ -744,6 +744,21 @@ func (d *Driver) findInteractiveElementByWDA(sel flow.Selector, stateFilter stri
 		fallbackPred = fmt.Sprintf("(%s)%s", fallbackPred, stateFilter)
 	}
 
+	// WDA runs one query at a time, so the four below cost four tree walks
+	// even in parallel, and a tap on plain text on a large React Native
+	// screen pays for all four only to miss. One walk over their union decides
+	// the common cases. No match means every query misses. One match means
+	// every query that hits returns that element, so it is the answer
+	// whatever the priority. Anything else runs the queries as before.
+	if ids, err := d.client.MatchElements("predicate string", interactiveUnion(sel.Text, stateFilter)); err == nil {
+		switch len(ids) {
+		case 0:
+			return nil, fmt.Errorf("no interactive element found via WDA")
+		case 1:
+			return d.getElementInfo(ids[0])
+		}
+	}
+
 	queries := []struct {
 		strategy string
 		value    string
@@ -782,6 +797,21 @@ func (d *Driver) findInteractiveElementByWDA(sel flow.Selector, stateFilter stri
 	}
 
 	return nil, fmt.Errorf("no interactive element found via WDA")
+}
+
+// interactiveUnion is a predicate matching exactly the elements that at
+// least one findInteractiveElementByWDA query matches: text and secure
+// fields by label, value or placeholder (the class chains), search fields
+// by label or value (only the fallback names them), and buttons by label.
+func interactiveUnion(text, stateFilter string) string {
+	pred := fmt.Sprintf(
+		"((type == 'XCUIElementTypeTextField' OR type == 'XCUIElementTypeSecureTextField') AND (label CONTAINS[c] '%s' OR value CONTAINS[c] '%s' OR placeholderValue CONTAINS[c] '%s')) OR (type == 'XCUIElementTypeSearchField' AND (label CONTAINS[c] '%s' OR value CONTAINS[c] '%s')) OR (type == 'XCUIElementTypeButton' AND label ==[c] '%s')",
+		text, text, text, text, text, text,
+	)
+	if stateFilter != "" {
+		return fmt.Sprintf("(%s)%s", pred, stateFilter)
+	}
+	return pred
 }
 
 // calculateTimeout returns the appropriate timeout duration.

@@ -23,6 +23,8 @@ func TestTapOnStaleElementRecovery(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
+				case strings.HasSuffix(r.URL.Path, "/elements"):
+					jsonResponse(w, map[string]any{"value": []map[string]string{{"ELEMENT": "stale"}}})
 				case strings.HasSuffix(r.URL.Path, "/element"):
 					jsonResponse(w, map[string]any{"value": map[string]string{"ELEMENT": "stale"}})
 				case strings.Contains(r.URL.Path, "/element/stale/"):

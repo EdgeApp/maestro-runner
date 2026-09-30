@@ -528,6 +528,37 @@ func (c *Client) CountElements(using, value string) (int, error) {
 	return len(val), nil
 }
 
+// MatchElements returns the id of every element that matches, keeping any
+// inline attributes like the other finds. As with CountElements, a response
+// without a value array is an error, so an empty result is WDA's answer.
+func (c *Client) MatchElements(using, value string) ([]string, error) {
+	resp, err := c.post(c.sessionPath("/elements"), map[string]interface{}{
+		"using": using,
+		"value": value,
+	})
+	if err != nil {
+		return nil, err
+	}
+	val, ok := resp["value"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("find elements response has no value array")
+	}
+	ids := make([]string, 0, len(val))
+	for _, elem := range val {
+		m, ok := elem.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("find elements response has a malformed entry")
+		}
+		id := elementRef(m)
+		if id == "" {
+			return nil, fmt.Errorf("find elements response entry has no element id")
+		}
+		c.storeInline(id, m)
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // elementRef reads an element reference from a find response entry: the
 // legacy ELEMENT key, else the W3C element-6066-... key. Only those keys are
 // read because a non-compact entry also carries string attributes (type,
