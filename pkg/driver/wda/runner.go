@@ -73,11 +73,18 @@ type Runner struct {
 // The WDA port is derived from the device UDID so each simulator gets a
 // deterministic, unique port without scanning.
 func NewRunner(deviceUDID, teamID, wdaBundleID string) *Runner {
+	return NewRunnerWithPort(deviceUDID, teamID, wdaBundleID, PortFromUDID(deviceUDID))
+}
+
+// NewRunnerWithPort creates a WDA runner on an explicit host port. Hosts that
+// allocate ports themselves (one per simulator slot) use it to keep WDA clear
+// of ports the UDID-derived 8100-9099 range can land on, such as Metro's.
+func NewRunnerWithPort(deviceUDID, teamID, wdaBundleID string, port uint16) *Runner {
 	return &Runner{
 		deviceUDID:  deviceUDID,
 		teamID:      teamID,
 		wdaBundleID: wdaBundleID,
-		port:        PortFromUDID(deviceUDID),
+		port:        port,
 	}
 }
 

@@ -233,6 +233,7 @@ func buildDeviceRunConfig(c *cli.Context) (*RunConfig, error) {
 		Capabilities:       caps,
 		TeamID:             getString("team-id"),
 		WDABundleID:        getString("wda-bundle-id"),
+		WDAPort:            getInt("wda-port"),
 		StartEmulator:      getString("start-emulator"),
 		StartSimulator:     getString("start-simulator"),
 		AutoStartEmulator:  getBool("auto-start-emulator"),

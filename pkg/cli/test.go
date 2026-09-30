@@ -561,6 +561,7 @@ type RunConfig struct {
 	TypingFrequency    int    // WDA typing frequency in keys/sec (0 = use WDA default of 60)
 	TeamID             string // Apple Development Team ID for WDA code signing
 	WDABundleID        string // Custom WDA bundle identifier
+	WDAPort            int    // Explicit WDA host port (0 = derive from the device UDID)
 
 	// Emulator/Simulator management
 	StartEmulator     string // AVD name to start (e.g., Pixel_7_API_33)
@@ -791,6 +792,7 @@ func runTest(c *cli.Context) error {
 		TypingFrequency:    getInt("typing-frequency"),
 		TeamID:             getString("team-id"),
 		WDABundleID:        getString("wda-bundle-id"),
+		WDAPort:            getInt("wda-port"),
 		StartEmulator:      getString("start-emulator"),
 		StartSimulator:     getString("start-simulator"),
 		AutoStartEmulator:  getBool("auto-start-emulator"),
@@ -1301,6 +1303,10 @@ func determineExecutionMode(cfg *RunConfig, emulatorMgr *emulator.Manager, simul
 	}
 
 	needsParallel = cfg.Parallel > 0 || len(cfg.Devices) > 1
+
+	if needsParallel && cfg.WDAPort != 0 {
+		return false, nil, fmt.Errorf("--wda-port applies to a single device; parallel runs derive one port per device")
+	}
 
 	if needsParallel {
 		if len(cfg.Devices) > 0 {

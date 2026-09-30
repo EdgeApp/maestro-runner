@@ -71,7 +71,10 @@ func CreateIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	}
 
 	// Check if device port is already in use (another instance using this device)
-	port := wdadriver.PortFromUDID(udid)
+	port, err := iosWDAPort(cfg, udid)
+	if err != nil {
+		return nil, nil, err
+	}
 	if isPortInUse(port) {
 		return nil, nil, fmt.Errorf("device %s is in use (port %d already bound)\n"+
 			"Another maestro-runner instance may be using this device.\n"+
@@ -110,7 +113,7 @@ func CreateIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	// 3. Create WDA runner
 	printSetupStep("Building WDA...")
 	logger.Info("Building WDA for device %s (team ID: %s)", udid, cfg.TeamID)
-	runner := wdadriver.NewRunner(udid, cfg.TeamID, cfg.WDABundleID)
+	runner := wdadriver.NewRunnerWithPort(udid, cfg.TeamID, cfg.WDABundleID, port)
 	ctx := context.Background()
 
 	if err := runner.Build(ctx); err != nil {
@@ -200,6 +203,18 @@ func CreateIOSDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	}
 
 	return driver, cleanup, nil
+}
+
+// iosWDAPort returns the WDA host port for a device: --wda-port when set,
+// otherwise the port derived from the UDID.
+func iosWDAPort(cfg *RunConfig, udid string) (uint16, error) {
+	if cfg.WDAPort == 0 {
+		return wdadriver.PortFromUDID(udid), nil
+	}
+	if cfg.WDAPort < 1 || cfg.WDAPort > 65535 {
+		return 0, fmt.Errorf("--wda-port %d is out of range (1-65535)", cfg.WDAPort)
+	}
+	return uint16(cfg.WDAPort), nil
 }
 
 // findIOSDevice finds an available iOS device (booted simulator or connected physical device).

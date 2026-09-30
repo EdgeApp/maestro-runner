@@ -339,3 +339,14 @@ func TestDestinationArchOverride(t *testing.T) {
 		t.Errorf("expected the unpinned destination, got %q", got)
 	}
 }
+
+func TestNewRunnerWithPort_UsesExplicitPort(t *testing.T) {
+	udid := "12345678-1234-1234-1234-ABCDEF123456"
+	runner := NewRunnerWithPort(udid, "", "", 8421)
+	if runner.Port() != 8421 {
+		t.Errorf("expected port 8421, got %d", runner.Port())
+	}
+	if runner.deviceUDID != udid {
+		t.Errorf("expected UDID %s, got %s", udid, runner.deviceUDID)
+	}
+}

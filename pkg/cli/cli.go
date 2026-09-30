@@ -95,6 +95,11 @@ var GlobalFlags = []cli.Flag{
 		Usage:   "Apple Development Team ID for WDA code signing (iOS)",
 		EnvVars: []string{"MAESTRO_TEAM_ID", "DEVELOPMENT_TEAM"},
 	},
+	&cli.IntFlag{
+		Name:    "wda-port",
+		Usage:   "Host port for WDA (iOS, single device). Default derives it from the device UDID (8100-9099)",
+		EnvVars: []string{"MAESTRO_WDA_PORT"},
+	},
 	&cli.StringFlag{
 		Name:    "wda-bundle-id",
 		Usage:   "Custom WDA bundle identifier for code signing (iOS)",
