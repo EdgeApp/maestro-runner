@@ -941,7 +941,8 @@ func (d *Driver) findElementByWDA(sel flow.Selector) (*core.ElementInfo, error) 
 }
 
 // getElementInfo gets element info from WDA element ID.
-// Fetches text, rect, displayed status, and element name in parallel for speed.
+// Uses the attributes the find returned inline when there are any; otherwise
+// fetches text, rect, displayed status, and element name in parallel.
 //
 // Visibility policy: XCUITest's `displayed` flag is unreliable on React Native
 // testID-bearing wrappers — it returns false even when the visible content
@@ -964,27 +965,38 @@ func (d *Driver) getElementInfo(elemID string) (*core.ElementInfo, error) {
 		x, y, w, h                         int
 		displayed                          bool
 		textErr, rectErr, dispErr, nameErr error
-		wg                                 sync.WaitGroup
 	)
 
-	wg.Add(4)
-	go func() {
-		defer wg.Done()
-		text, textErr = d.client.ElementText(elemID)
-	}()
-	go func() {
-		defer wg.Done()
-		x, y, w, h, rectErr = d.client.ElementRect(elemID)
-	}()
-	go func() {
-		defer wg.Done()
-		displayed, dispErr = d.client.ElementDisplayed(elemID)
-	}()
-	go func() {
-		defer wg.Done()
-		elemName, nameErr = d.client.ElementName(elemID)
-	}()
-	wg.Wait()
+	if attrs, ok := d.client.TakeInlineAttrs(elemID); ok {
+		// The find already returned these from its own snapshot, so the
+		// four GETs below (a fresh snapshot each) are skipped. Text that may
+		// have hit the snapshot's string cap is re-read in full.
+		text, elemName, displayed = attrs.Text, attrs.Type, attrs.Displayed
+		x, y, w, h = attrs.X, attrs.Y, attrs.Width, attrs.Height
+		if attrs.TextTruncated {
+			text, textErr = d.client.ElementText(elemID)
+		}
+	} else {
+		var wg sync.WaitGroup
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			text, textErr = d.client.ElementText(elemID)
+		}()
+		go func() {
+			defer wg.Done()
+			x, y, w, h, rectErr = d.client.ElementRect(elemID)
+		}()
+		go func() {
+			defer wg.Done()
+			displayed, dispErr = d.client.ElementDisplayed(elemID)
+		}()
+		go func() {
+			defer wg.Done()
+			elemName, nameErr = d.client.ElementName(elemID)
+		}()
+		wg.Wait()
+	}
 
 	if rectErr != nil {
 		return nil, fmt.Errorf("element bounds unavailable: %w", rectErr)

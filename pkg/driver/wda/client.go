@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
@@ -23,6 +24,11 @@ type Client struct {
 	baseURL    string
 	sessionID  string
 	httpClient *http.Client
+
+	// inline holds the attributes the latest finds returned per element, so
+	// getElementInfo can skip its four per-element GETs. See ElementAttrs.
+	inlineMu sync.Mutex
+	inline   map[string]inlineEntry
 }
 
 // NewClient creates a new WDA client.
@@ -85,7 +91,33 @@ func (c *Client) CreateSession(bundleID string, alertAction string) error {
 	// launchApp recreates — gets it.
 	_ = c.UpdateSettings(map[string]interface{}{"snapshotMaxDepth": wdaSnapshotMaxDepth()})
 
+	// Have finds return each element's type, text, rect and displayed flag
+	// from the snapshot the query already took. Without this, resolving one
+	// element costs four more requests (name, text, rect, displayed), each of
+	// which takes a fresh accessibility snapshot (~400ms apiece on a React
+	// Native screen). Sent on its own so a WDA that rejects it still gets the
+	// depth cap above; a WDA that ignores it keeps compact responses and
+	// getElementInfo falls back to the per-element GETs.
+	if inlineAttrsEnabled() {
+		_ = c.UpdateSettings(map[string]interface{}{
+			"shouldUseCompactResponses": false,
+			"elementResponseAttributes": inlineAttrFields,
+		})
+	}
+
 	return nil
+}
+
+// inlineAttrFields are the per-element fields requested inline with finds.
+// WDA fills them from the find snapshot: type is wdType (what GET /name
+// returns), text is value-else-label (what GET /text returns), rect is wdRect
+// and displayed is wdVisible (what GET /rect and GET /displayed return).
+const inlineAttrFields = "type,text,rect,displayed"
+
+// inlineAttrsEnabled reports whether finds should request inline attributes.
+// MAESTRO_WDA_INLINE_ATTRS=0 turns it off, restoring the per-element GETs.
+func inlineAttrsEnabled() bool {
+	return os.Getenv("MAESTRO_WDA_INLINE_ATTRS") != "0"
 }
 
 // wdaSnapshotMaxDepth is the WebDriverAgent accessibility-snapshot depth cap.
@@ -447,14 +479,9 @@ func (c *Client) FindElement(using, value string) (string, error) {
 	}
 
 	if val, ok := resp["value"].(map[string]interface{}); ok {
-		if elem, ok := val["ELEMENT"].(string); ok {
+		if elem := elementRef(val); elem != "" {
+			c.storeInline(elem, val)
 			return elem, nil
-		}
-		// W3C format
-		for k, v := range val {
-			if str, ok := v.(string); ok && k != "error" {
-				return str, nil
-			}
 		}
 	}
 	return "", fmt.Errorf("element not found")
@@ -474,21 +501,153 @@ func (c *Client) FindElements(using, value string) ([]string, error) {
 	if val, ok := resp["value"].([]interface{}); ok {
 		for _, elem := range val {
 			if m, ok := elem.(map[string]interface{}); ok {
-				if id, ok := m["ELEMENT"].(string); ok {
+				if id := elementRef(m); id != "" {
+					c.storeInline(id, m)
 					elements = append(elements, id)
-				} else {
-					// W3C format
-					for _, v := range m {
-						if str, ok := v.(string); ok {
-							elements = append(elements, str)
-							break
-						}
-					}
 				}
 			}
 		}
 	}
 	return elements, nil
+}
+
+// elementRef reads an element reference from a find response entry: the
+// legacy ELEMENT key, else the W3C element-6066-... key. Only those keys are
+// read because a non-compact entry also carries string attributes (type,
+// text), which must never be taken for the reference.
+func elementRef(m map[string]interface{}) string {
+	if id, ok := m["ELEMENT"].(string); ok && id != "" {
+		return id
+	}
+	for k, v := range m {
+		if !strings.HasPrefix(k, "element-") {
+			continue
+		}
+		if id, ok := v.(string); ok && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// ElementAttrs are the attributes a find returned inline for one element.
+type ElementAttrs struct {
+	Type                string
+	Text                string
+	X, Y, Width, Height int
+	Displayed           bool
+	// TextTruncated is set when Text may be cut short: WDA caps string
+	// values in query snapshots at 512 bytes, while GET /text reads a
+	// custom snapshot that is not capped (appium-xcuitest-driver#2552).
+	TextTruncated bool
+}
+
+// inlineTextLimit is the text length at which inline text is treated as
+// possibly truncated and re-read with GET /text. It sits under WDA's
+// 512-byte snapshot cap so a value cut at the cap is always caught.
+const inlineTextLimit = 500
+
+// inlineAttrsMaxAge bounds how long inline attributes stand in for a fresh
+// read. getElementInfo runs right after the find that produced the id; an
+// entry older than this came from an earlier poll and is not used.
+const inlineAttrsMaxAge = 2 * time.Second
+
+// maxInlineEntries caps the inline map; finds that are never followed by
+// getElementInfo (taps by id, counts) would otherwise grow it for the whole
+// session.
+const maxInlineEntries = 256
+
+type inlineEntry struct {
+	attrs ElementAttrs
+	at    time.Time
+}
+
+// parseInlineAttrs reads the inline fields from a non-compact find entry.
+// ok is false unless type, rect and displayed are all present, which is the
+// case only when WDA honoured elementResponseAttributes.
+func parseInlineAttrs(m map[string]interface{}) (ElementAttrs, bool) {
+	var a ElementAttrs
+	typ, ok := m["type"].(string)
+	if !ok {
+		return a, false
+	}
+	rect, ok := m["rect"].(map[string]interface{})
+	if !ok {
+		return a, false
+	}
+	displayed, ok := m["displayed"].(bool)
+	if !ok {
+		return a, false
+	}
+	a.Type = typ
+	a.Displayed = displayed
+	a.X, a.Y, a.Width, a.Height = rectInts(rect)
+	if text, ok := m["text"].(string); ok {
+		a.Text = text
+		a.TextTruncated = len(text) >= inlineTextLimit
+	}
+	return a, true
+}
+
+// rectInts converts a WDA rect object to integer bounds.
+func rectInts(rect map[string]interface{}) (x, y, width, height int) {
+	if v, ok := rect["x"].(float64); ok {
+		x = int(v)
+	}
+	if v, ok := rect["y"].(float64); ok {
+		y = int(v)
+	}
+	if v, ok := rect["width"].(float64); ok {
+		width = int(v)
+	}
+	if v, ok := rect["height"].(float64); ok {
+		height = int(v)
+	}
+	return x, y, width, height
+}
+
+func (c *Client) storeInline(id string, m map[string]interface{}) {
+	attrs, ok := parseInlineAttrs(m)
+	if !ok {
+		return
+	}
+	c.inlineMu.Lock()
+	defer c.inlineMu.Unlock()
+	if c.inline == nil || len(c.inline) >= maxInlineEntries {
+		c.inline = make(map[string]inlineEntry)
+	}
+	c.inline[id] = inlineEntry{attrs: attrs, at: time.Now()}
+}
+
+// TakeInlineAttrs returns and forgets the attributes the latest find
+// returned for id. ok is false when there are none (compact responses, an
+// entry older than inlineAttrsMaxAge, or a gesture since the find).
+func (c *Client) TakeInlineAttrs(id string) (ElementAttrs, bool) {
+	c.inlineMu.Lock()
+	defer c.inlineMu.Unlock()
+	e, ok := c.inline[id]
+	if !ok {
+		return ElementAttrs{}, false
+	}
+	delete(c.inline, id)
+	if time.Since(e.at) > inlineAttrsMaxAge {
+		return ElementAttrs{}, false
+	}
+	return e.attrs, true
+}
+
+// clearInline drops every inline entry. Any POST other than a find can
+// change the screen, after which the find snapshot no longer describes it.
+func (c *Client) clearInline() {
+	c.inlineMu.Lock()
+	c.inline = nil
+	c.inlineMu.Unlock()
+}
+
+// isFindPath reports whether a POST path is an element find, which leaves
+// the screen unchanged.
+func isFindPath(path string) bool {
+	return strings.HasSuffix(path, "/element") || strings.HasSuffix(path, "/elements")
 }
 
 // ElementClick clicks an element.
@@ -540,18 +699,7 @@ func (c *Client) ElementRect(elementID string) (x, y, width, height int, err err
 		return 0, 0, 0, 0, err
 	}
 	if value, ok := resp["value"].(map[string]interface{}); ok {
-		if v, ok := value["x"].(float64); ok {
-			x = int(v)
-		}
-		if v, ok := value["y"].(float64); ok {
-			y = int(v)
-		}
-		if v, ok := value["width"].(float64); ok {
-			width = int(v)
-		}
-		if v, ok := value["height"].(float64); ok {
-			height = int(v)
-		}
+		x, y, width, height = rectInts(value)
 	}
 	return x, y, width, height, nil
 }
@@ -628,6 +776,9 @@ func (c *Client) get(path string) (map[string]interface{}, error) {
 
 func (c *Client) post(path string, body interface{}) (map[string]interface{}, error) {
 	start := time.Now()
+	if !isFindPath(path) {
+		c.clearInline()
+	}
 	var reqBody io.Reader
 	bodyStr := ""
 	if body != nil {
