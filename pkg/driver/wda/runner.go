@@ -220,15 +220,23 @@ func (r *Runner) buildForTesting(ctx context.Context) error {
 // and kills + retries up to maxStartupAttempts times. Matches the
 // equivalent retry logic in pkg/driver/devicelab_ios_legacy/setup.go.
 func (r *Runner) Start(ctx context.Context) error {
-	xctestrun, err := r.findXctestrun()
+	built, err := r.findXctestrun()
 	if err != nil {
 		return err
+	}
+	// Each device runs from its own copy: startOnce writes this run's port
+	// into the xctestrun, and parallel runs share one build.
+	xctestrun, err := xctestrunForDevice(built, r.deviceUDID)
+	if err != nil {
+		return fmt.Errorf("failed to prepare xctestrun: %w", err)
 	}
 
 	// Check if this is a simulator or physical device
 	r.isSimulatorCache, _ = r.isSimulator()
 
-	logPath := filepath.Join(r.buildDir, "logs", "runner.log")
+	// Per device, so one run's stall detection and ready marker never read
+	// another's xcodebuild output from the shared cache directory.
+	logPath := filepath.Join(r.buildDir, "logs", "runner-"+r.deviceUDID+".log")
 
 	var lastErr error
 	for attempt := 1; attempt <= maxStartupAttempts; attempt++ {
@@ -718,10 +726,31 @@ func (r *Runner) derivedDataPath() string {
 func (r *Runner) findXctestrun() (string, error) {
 	pattern := filepath.Join(r.derivedDataPath(), "Build", "Products", "*.xctestrun")
 	matches, _ := filepath.Glob(pattern)
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no xctestrun file found in %s", filepath.Dir(pattern))
+	for _, m := range matches {
+		if !strings.HasPrefix(filepath.Base(m), deviceXctestrunPrefix) {
+			return m, nil
+		}
 	}
-	return matches[0], nil
+	return "", fmt.Errorf("no xctestrun file found in %s", filepath.Dir(pattern))
+}
+
+// deviceXctestrunPrefix names the per-device copies of the built xctestrun.
+const deviceXctestrunPrefix = "device-"
+
+// xctestrunForDevice copies the built xctestrun for one device, next to the
+// original because its paths are relative to its own directory. Parallel
+// runs share one build; editing the shared file for each run's port let one
+// run launch WDA on another's port.
+func xctestrunForDevice(xctestrun, udid string) (string, error) {
+	data, err := os.ReadFile(xctestrun)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(filepath.Dir(xctestrun), deviceXctestrunPrefix+udid+"-"+filepath.Base(xctestrun))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func (r *Runner) waitForStartup(logPath string, exit <-chan error) error {
