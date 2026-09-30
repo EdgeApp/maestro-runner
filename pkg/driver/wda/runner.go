@@ -140,14 +140,32 @@ func (r *Runner) Build(ctx context.Context) error {
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
+	return r.buildIfMissing(func() error { return r.buildForTesting(ctx) })
+}
+
+// buildIfMissing runs build unless the cache already holds an xctestrun.
+// Parallel runs on simulators of one iOS version share this cache directory,
+// so the check and the build happen under a file lock: without it two runs
+// build into one DerivedData directory at once, and a run that finds the
+// build missing while another is writing it starts a second build.
+func (r *Runner) buildIfMissing(build func() error) error {
+	unlock, err := lockFile(r.buildDir + ".lock")
+	if err != nil {
+		return fmt.Errorf("failed to lock WDA build cache: %w", err)
+	}
+	defer unlock()
+
 	// Check if already built by looking for xctestrun file
 	if _, err := r.findXctestrun(); err == nil {
-		// Build exists - skip rebuilding
+		// Build exists (possibly finished while this run waited for the lock)
 		fmt.Printf("  ✓ Using cached WebDriverAgent build (%s)\n", filepath.Base(r.buildDir))
 		return nil
 	}
+	return build()
+}
 
-	// Need to build
+// buildForTesting builds WDA into the cache with xcodebuild build-for-testing.
+func (r *Runner) buildForTesting(ctx context.Context) error {
 	fmt.Println("\n  ⏳ Building WebDriverAgent for the first time...")
 	fmt.Println("     This may take 5-10 minutes depending on your machine.")
 	fmt.Println("     Next time it will be much faster (cached builds are reused).")
