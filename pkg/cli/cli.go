@@ -81,6 +81,11 @@ var GlobalFlags = []cli.Flag{
 		EnvVars: []string{"MAESTRO_NO_APP_INSTALL"},
 	},
 	&cli.BoolFlag{
+		Name:    "no-update-check",
+		Usage:   "Skip the background check for a newer maestro-runner release (a request to open.devicelab.dev)",
+		EnvVars: []string{"MAESTRO_RUNNER_NO_UPDATE_CHECK"},
+	},
+	&cli.BoolFlag{
 		Name:    "no-driver-install",
 		Usage:   "Skip driver installation (UIAutomator2, WDA, DeviceLab)",
 		EnvVars: []string{"MAESTRO_NO_DRIVER_INSTALL"},

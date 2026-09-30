@@ -638,9 +638,6 @@ func runTest(c *cli.Context) error {
 	// Print banner at start
 	printBanner()
 
-	// Check for updates in background (prints at end)
-	startUpdateCheck()
-
 	// Helper to get flag value from current or parent context
 	// When run as subcommand, global flags are in parent context
 	getString := func(name string) string {
@@ -679,6 +676,9 @@ func runTest(c *cli.Context) error {
 		}
 		return c.StringSlice(name)
 	}
+
+	// Check for updates in background (prints at end)
+	maybeStartUpdateCheck(getBool("no-update-check"))
 
 	// Parse environment variables
 	env := parseEnvVars(getStringSlice("env"))

@@ -7,13 +7,24 @@ import (
 	"time"
 )
 
-const updateCheckURL = "https://open.devicelab.dev/api/maestro-runner/updates"
+// updateCheckURL is a var so tests can point the check at a local server.
+var updateCheckURL = "https://open.devicelab.dev/api/maestro-runner/updates"
 
 // updateNotice receives the update message from the background check.
 var updateNotice = make(chan string, 1)
 
 type updateResponse struct {
 	LatestVersion string `json:"latest_version"`
+}
+
+// maybeStartUpdateCheck starts the background update check unless it was
+// turned off with --no-update-check (MAESTRO_RUNNER_NO_UPDATE_CHECK). Hosts
+// that must not call out, or that pin a version, turn it off.
+func maybeStartUpdateCheck(disabled bool) {
+	if disabled {
+		return
+	}
+	startUpdateCheck()
 }
 
 // startUpdateCheck kicks off a background update check.
