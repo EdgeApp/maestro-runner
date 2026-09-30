@@ -386,7 +386,7 @@ func (d *Driver) assertVisibleCount(step *flow.AssertVisibleStep, want int) *cor
 // countVisibleMatchesOnce takes one page-source snapshot and counts the
 // selector's visible matches.
 func (d *Driver) countVisibleMatchesOnce(sel flow.Selector) (int, error) {
-	pageSource, err := d.client.Source()
+	pageSource, err := d.client.MatchSource()
 	if err != nil {
 		return 0, err
 	}

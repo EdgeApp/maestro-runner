@@ -133,8 +133,8 @@ func TestPlaceholderOnlyMatchFallsBackToSource(t *testing.T) {
 	if info.Bounds.Width != 300 {
 		t.Errorf("unexpected info %+v", info)
 	}
-	if a.sources != 1 {
-		t.Errorf("fetched /source %d times, want 1", a.sources)
+	if a.sources == 0 {
+		t.Error("never fetched /source, want page source to decide")
 	}
 }
 
@@ -148,8 +148,8 @@ func TestUnreadableProbeFallsBackToSource(t *testing.T) {
 	if _, err := d.findElementOnce(flow.Selector{Text: "Assets"}); err != nil {
 		t.Fatalf("expected the page-source match, got %v", err)
 	}
-	if a.sources != 1 {
-		t.Errorf("fetched /source %d times, want 1", a.sources)
+	if a.sources == 0 {
+		t.Error("never fetched /source, want page source to decide")
 	}
 }
 
@@ -164,8 +164,8 @@ func TestIneligibleSelectorsKeepSource(t *testing.T) {
 		if a.probes != 0 {
 			t.Errorf("%s: probed %d times, want 0", sel.Describe(), a.probes)
 		}
-		if a.sources != 1 {
-			t.Errorf("%s: fetched /source %d times, want 1", sel.Describe(), a.sources)
+		if a.sources == 0 {
+			t.Errorf("%s: never fetched /source, want page source to decide", sel.Describe())
 		}
 	}
 }

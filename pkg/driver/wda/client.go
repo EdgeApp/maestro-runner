@@ -347,7 +347,34 @@ func (c *Client) Screenshot() ([]byte, error) {
 
 // Source returns the UI hierarchy as XML.
 func (c *Client) Source() (string, error) {
-	resp, err := c.get(c.sessionPath("/source"))
+	return c.source("/source")
+}
+
+// matchSourceExcludedAttributes are /source attributes the page-source
+// matcher never filters on. visible is the costly one: WDA works it out per
+// element, and leaving it out took a 594-element React Native screen from
+// about 10.5s to 3.7s. ParsePageSource treats a missing visible as true.
+const matchSourceExcludedAttributes = "visible,accessible"
+
+// leanSource reports whether MatchSource fetches the lean tree.
+// MAESTRO_WDA_LEAN_SOURCE=0 turns it off.
+func leanSource() bool {
+	return os.Getenv("MAESTRO_WDA_LEAN_SOURCE") != "0"
+}
+
+// MatchSource returns the UI hierarchy without visible and accessible, for
+// element lookup. Matching reads bounds, not visible, so a miss in this tree
+// is a miss in the full one; a caller that reports visibility re-reads a hit
+// from Source. Hierarchy dumps keep using Source.
+func (c *Client) MatchSource() (string, error) {
+	if !leanSource() {
+		return c.Source()
+	}
+	return c.source("/source?excluded_attributes=" + matchSourceExcludedAttributes)
+}
+
+func (c *Client) source(path string) (string, error) {
+	resp, err := c.get(c.sessionPath(path))
 	if err != nil {
 		// A snapshot taken while the accessibility tree is mutating can fail
 		// with a transient kAXErrorInvalidUIElement (-25202): an element ref
@@ -355,7 +382,7 @@ func (c *Client) Source() (string, error) {
 		// before surfacing it (mirrors Maestro's #3430 recovery).
 		if isTransientAXError(err) {
 			time.Sleep(150 * time.Millisecond)
-			resp, err = c.get(c.sessionPath("/source"))
+			resp, err = c.get(c.sessionPath(path))
 		}
 		if err != nil {
 			return "", err

@@ -1200,11 +1200,24 @@ func (d *Driver) findElementRelativeWithContext(ctx context.Context, sel flow.Se
 
 // findElementRelativeOnce performs a single attempt to find element with relative selector.
 func (d *Driver) findElementRelativeOnce(sel flow.Selector) (*core.ElementInfo, error) {
-	pageSource, err := d.client.Source()
+	pageSource, err := d.client.MatchSource()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get page source: %w", err)
 	}
+	info, err := d.findRelativeInSource(sel, pageSource)
+	if err != nil || !leanSource() {
+		return info, err
+	}
+	// The lean tree has no visible: read the hit again from the full tree
+	// so Visible and the rescue note are XCUITest's.
+	if pageSource, err = d.client.Source(); err != nil {
+		return nil, fmt.Errorf("failed to get page source: %w", err)
+	}
+	return d.findRelativeInSource(sel, pageSource)
+}
 
+// findRelativeInSource resolves a relative selector against one page source.
+func (d *Driver) findRelativeInSource(sel flow.Selector, pageSource string) (*core.ElementInfo, error) {
 	allElements, err := ParsePageSource(pageSource)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse page source: %w", err)
@@ -1298,11 +1311,24 @@ func (d *Driver) resolveRelativeSelector(sel flow.Selector, allElements []*Parse
 
 // findElementByPageSourceOnce performs a single page source search.
 func (d *Driver) findElementByPageSourceOnce(sel flow.Selector) (*core.ElementInfo, error) {
-	pageSource, err := d.client.Source()
+	pageSource, err := d.client.MatchSource()
 	if err != nil {
 		return nil, err
 	}
+	info, err := d.findInSource(sel, pageSource)
+	if err != nil || !leanSource() {
+		return info, err
+	}
+	// The lean tree has no visible: read the hit again from the full tree
+	// so Visible and the rescue note are XCUITest's.
+	if pageSource, err = d.client.Source(); err != nil {
+		return nil, err
+	}
+	return d.findInSource(sel, pageSource)
+}
 
+// findInSource matches a selector against one page source.
+func (d *Driver) findInSource(sel flow.Selector, pageSource string) (*core.ElementInfo, error) {
 	allElements, err := ParsePageSource(pageSource)
 	if err != nil {
 		return nil, err
